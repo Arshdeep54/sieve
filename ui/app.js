@@ -182,8 +182,8 @@ function renderTimeline(report) {
 }
 
 function renderIngest(batch, errorsUrl) {
-  view.ingestFigures.hidden = batch.total_rows === null;
-  if (batch.total_rows === null) return;
+  view.ingestFigures.hidden = batch.total_rows === null || batch.status === 'duplicate';
+  if (view.ingestFigures.hidden) return;
   setText('rows-total', batch.total_rows);
   setText('rows-valid', batch.valid_rows);
   setText('rows-rejected', batch.rejected_rows);
