@@ -1,0 +1,32 @@
+[project]
+name = "loan-engine"
+version = "0.1.0"
+description = "Loan eligibility engine backend: CSV ingestion Lambdas"
+authors = [
+    { name = "Arshdeep54", email = "balarsh535@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "pg8000>=1.31.5",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.16,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "boto3>=1.43.113",
+    "pytest>=9.1.1",
+    "ruff>=0.17.0",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "N"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
