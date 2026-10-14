@@ -1,0 +1,388 @@
+service: loan-engine
+frameworkVersion: "4"
+
+provider:
+  name: aws
+  runtime: python3.12
+  architecture: x86_64
+  region: ${env:AWS_REGION, 'ap-south-1'}
+  stage: ${opt:stage, 'dev'}
+  memorySize: 512
+  timeout: 29
+  logRetentionInDays: 14
+  httpApi:
+    payload: "2.0"
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action: [s3:GetObject, s3:PutObject]
+          Resource:
+            - arn:aws:s3:::${self:custom.bucket}/uploads/*
+            - arn:aws:s3:::${self:custom.bucket}/errors/*
+        - Effect: Allow
+          Action: sqs:SendMessage
+          Resource: !GetAtt IngestFailures.Arn
+
+custom:
+  environment:
+    DB_HOST: !GetAtt Database.Endpoint.Address
+    DB_PORT: "5432"
+    DB_NAME: loan_engine
+    DB_USER: loan_engine
+    DB_PASSWORD: ${ssm:/loan-engine/${sls:stage}/db-password}
+    DB_SSL: "true"
+    DB_SSL_CA: /var/task/loan_engine/rds-ca.pem
+    UPLOAD_BUCKET: ${self:custom.bucket}
+    N8N_WEBHOOK_URL: !Sub http://${N8nInstance.PrivateIp}:5678/webhook/batch-ingested
+    WEBHOOK_SECRET: ${ssm:/loan-engine/${sls:stage}/webhook-secret}
+  bucket: loan-engine-${sls:stage}-${aws:accountId}-${aws:region}
+  vpc:
+    securityGroupIds: [!Ref LambdaSecurityGroup]
+    subnetIds: [!Ref PrivateSubnetA, !Ref PrivateSubnetB]
+
+package:
+  artifact: .build/lambda.zip
+
+functions:
+  ui:
+    handler: loan_engine.handlers.ui.handler
+    memorySize: 256
+    events:
+      - httpApi: GET /
+      - httpApi: GET /app.js
+      - httpApi: GET /styles.css
+
+  createUpload:
+    handler: loan_engine.handlers.create_upload.handler
+    vpc: ${self:custom.vpc}
+    environment: ${self:custom.environment}
+    events:
+      - httpApi: POST /uploads
+
+  status:
+    handler: loan_engine.handlers.status.handler
+    vpc: ${self:custom.vpc}
+    environment: ${self:custom.environment}
+    events:
+      - httpApi: GET /uploads/{batch_id}
+
+  ingest:
+    handler: loan_engine.handlers.ingest.handler
+    vpc: ${self:custom.vpc}
+    environment: ${self:custom.environment}
+    memorySize: 1024
+    timeout: 900
+
+  migrate:
+    handler: loan_engine.handlers.migrate.handler
+    vpc: ${self:custom.vpc}
+    environment: ${self:custom.environment}
+    timeout: 120
+
+resources:
+  Resources:
+    Vpc:
+      Type: AWS::EC2::VPC
+      Properties:
+        CidrBlock: 10.20.0.0/16
+        EnableDnsSupport: true
+        EnableDnsHostnames: true
+        Tags:
+          - Key: Name
+            Value: loan-engine-${sls:stage}
+
+    InternetGateway:
+      Type: AWS::EC2::InternetGateway
+
+    GatewayAttachment:
+      Type: AWS::EC2::VPCGatewayAttachment
+      Properties:
+        VpcId: !Ref Vpc
+        InternetGatewayId: !Ref InternetGateway
+
+    PublicSubnet:
+      Type: AWS::EC2::Subnet
+      Properties:
+        VpcId: !Ref Vpc
+        CidrBlock: 10.20.0.0/24
+        AvailabilityZone: !Select [0, !GetAZs ""]
+        MapPublicIpOnLaunch: true
+        Tags:
+          - Key: Name
+            Value: loan-engine-${sls:stage}-public
+
+    PrivateSubnetA:
+      Type: AWS::EC2::Subnet
+      Properties:
+        VpcId: !Ref Vpc
+        CidrBlock: 10.20.10.0/24
+        AvailabilityZone: !Select [0, !GetAZs ""]
+        Tags:
+          - Key: Name
+            Value: loan-engine-${sls:stage}-private-a
+
+    PrivateSubnetB:
+      Type: AWS::EC2::Subnet
+      Properties:
+        VpcId: !Ref Vpc
+        CidrBlock: 10.20.11.0/24
+        AvailabilityZone: !Select [1, !GetAZs ""]
+        Tags:
+          - Key: Name
+            Value: loan-engine-${sls:stage}-private-b
+
+    PublicRouteTable:
+      Type: AWS::EC2::RouteTable
+      Properties:
+        VpcId: !Ref Vpc
+
+    PublicRoute:
+      Type: AWS::EC2::Route
+      DependsOn: GatewayAttachment
+      Properties:
+        RouteTableId: !Ref PublicRouteTable
+        DestinationCidrBlock: 0.0.0.0/0
+        GatewayId: !Ref InternetGateway
+
+    PublicSubnetRoutes:
+      Type: AWS::EC2::SubnetRouteTableAssociation
+      Properties:
+        SubnetId: !Ref PublicSubnet
+        RouteTableId: !Ref PublicRouteTable
+
+    PrivateRouteTable:
+      Type: AWS::EC2::RouteTable
+      Properties:
+        VpcId: !Ref Vpc
+
+    PrivateSubnetARoutes:
+      Type: AWS::EC2::SubnetRouteTableAssociation
+      Properties:
+        SubnetId: !Ref PrivateSubnetA
+        RouteTableId: !Ref PrivateRouteTable
+
+    PrivateSubnetBRoutes:
+      Type: AWS::EC2::SubnetRouteTableAssociation
+      Properties:
+        SubnetId: !Ref PrivateSubnetB
+        RouteTableId: !Ref PrivateRouteTable
+
+    S3Endpoint:
+      Type: AWS::EC2::VPCEndpoint
+      Properties:
+        VpcId: !Ref Vpc
+        ServiceName: !Sub com.amazonaws.${AWS::Region}.s3
+        VpcEndpointType: Gateway
+        RouteTableIds: [!Ref PrivateRouteTable]
+
+    LambdaSecurityGroup:
+      Type: AWS::EC2::SecurityGroup
+      Properties:
+        GroupDescription: Loan engine Lambdas
+        VpcId: !Ref Vpc
+
+    N8nSecurityGroup:
+      Type: AWS::EC2::SecurityGroup
+      Properties:
+        GroupDescription: n8n host, webhook reachable from the Lambdas only
+        VpcId: !Ref Vpc
+        SecurityGroupIngress:
+          - IpProtocol: tcp
+            FromPort: 5678
+            ToPort: 5678
+            SourceSecurityGroupId: !Ref LambdaSecurityGroup
+
+    DatabaseSecurityGroup:
+      Type: AWS::EC2::SecurityGroup
+      Properties:
+        GroupDescription: Loan engine Postgres
+        VpcId: !Ref Vpc
+        SecurityGroupIngress:
+          - IpProtocol: tcp
+            FromPort: 5432
+            ToPort: 5432
+            SourceSecurityGroupId: !Ref LambdaSecurityGroup
+          - IpProtocol: tcp
+            FromPort: 5432
+            ToPort: 5432
+            SourceSecurityGroupId: !Ref N8nSecurityGroup
+
+    DatabaseSubnetGroup:
+      Type: AWS::RDS::DBSubnetGroup
+      Properties:
+        DBSubnetGroupDescription: Loan engine private subnets
+        SubnetIds: [!Ref PrivateSubnetA, !Ref PrivateSubnetB]
+
+    Database:
+      Type: AWS::RDS::DBInstance
+      DeletionPolicy: Snapshot
+      UpdateReplacePolicy: Snapshot
+      Properties:
+        Engine: postgres
+        EngineVersion: "16.15"
+        DBInstanceClass: db.t4g.micro
+        AllocatedStorage: "20"
+        StorageType: gp3
+        StorageEncrypted: true
+        DBName: loan_engine
+        MasterUsername: loan_engine
+        MasterUserPassword: "{{resolve:ssm-secure:/loan-engine/${sls:stage}/db-password}}"
+        DBSubnetGroupName: !Ref DatabaseSubnetGroup
+        VPCSecurityGroups: [!Ref DatabaseSecurityGroup]
+        PubliclyAccessible: false
+        BackupRetentionPeriod: 1
+
+    DatabaseHostParameter:
+      Type: AWS::SSM::Parameter
+      Properties:
+        Name: /loan-engine/${sls:stage}/db-host
+        Type: String
+        Value: !GetAtt Database.Endpoint.Address
+
+    UploadBucket:
+      Type: AWS::S3::Bucket
+      DependsOn: IngestS3Permission
+      Properties:
+        BucketName: ${self:custom.bucket}
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: true
+          BlockPublicPolicy: true
+          IgnorePublicAcls: true
+          RestrictPublicBuckets: true
+        BucketEncryption:
+          ServerSideEncryptionConfiguration:
+            - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+        CorsConfiguration:
+          CorsRules:
+            - AllowedMethods: [POST]
+              AllowedOrigins: [!Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"]
+              AllowedHeaders: ["*"]
+              MaxAge: 3600
+        LifecycleConfiguration:
+          Rules:
+            - Id: expire-uploads
+              Status: Enabled
+              Prefix: uploads/
+              ExpirationInDays: 30
+            - Id: expire-errors
+              Status: Enabled
+              Prefix: errors/
+              ExpirationInDays: 30
+        NotificationConfiguration:
+          LambdaConfigurations:
+            - Event: s3:ObjectCreated:*
+              Function: !GetAtt IngestLambdaFunction.Arn
+              Filter:
+                S3Key:
+                  Rules:
+                    - { Name: prefix, Value: uploads/ }
+                    - { Name: suffix, Value: .csv }
+
+    IngestS3Permission:
+      Type: AWS::Lambda::Permission
+      Properties:
+        FunctionName: !Ref IngestLambdaFunction
+        Action: lambda:InvokeFunction
+        Principal: s3.amazonaws.com
+        SourceAccount: !Ref AWS::AccountId
+        SourceArn: arn:aws:s3:::${self:custom.bucket}
+
+    IngestFailures:
+      Type: AWS::SQS::Queue
+      Properties:
+        MessageRetentionPeriod: 1209600
+
+    IngestFailureDestination:
+      Type: AWS::Lambda::EventInvokeConfig
+      Properties:
+        FunctionName: !Ref IngestLambdaFunction
+        Qualifier: $LATEST
+        MaximumRetryAttempts: 2
+        DestinationConfig:
+          OnFailure:
+            Destination: !GetAtt IngestFailures.Arn
+
+    N8nRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal: { Service: ec2.amazonaws.com }
+              Action: sts:AssumeRole
+        ManagedPolicyArns:
+          - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        Policies:
+          - PolicyName: loan-engine-n8n
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action: s3:ListBucket
+                  Resource: arn:aws:s3:::${self:custom.bucket}
+                  Condition:
+                    StringLike: { s3:prefix: deploy/* }
+                - Effect: Allow
+                  Action: s3:GetObject
+                  Resource: arn:aws:s3:::${self:custom.bucket}/deploy/*
+                - Effect: Allow
+                  Action: ssm:GetParametersByPath
+                  Resource:
+                    - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/loan-engine/${sls:stage}
+                    - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/loan-engine/${sls:stage}/*
+
+    N8nInstanceProfile:
+      Type: AWS::IAM::InstanceProfile
+      Properties:
+        Roles: [!Ref N8nRole]
+
+    N8nInstance:
+      Type: AWS::EC2::Instance
+      Properties:
+        ImageId: "{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64}}"
+        InstanceType: t4g.small
+        SubnetId: !Ref PublicSubnet
+        SecurityGroupIds: [!Ref N8nSecurityGroup]
+        IamInstanceProfile: !Ref N8nInstanceProfile
+        MetadataOptions:
+          HttpTokens: required
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs: { VolumeSize: 20, VolumeType: gp3, Encrypted: true }
+        UserData:
+          Fn::Base64: |
+            #!/bin/bash
+            set -euo pipefail
+            dnf install -y docker
+            mkdir -p /usr/local/lib/docker/cli-plugins
+            curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-compose \
+              https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-aarch64
+            chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+            systemctl enable --now docker
+        Tags:
+          - Key: Name
+            Value: loan-engine-${sls:stage}-n8n
+
+    SesSender:
+      Type: AWS::IAM::User
+      Properties:
+        Policies:
+          - PolicyName: send-email
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action: ses:SendEmail
+                  Resource: !Sub arn:aws:ses:${AWS::Region}:${AWS::AccountId}:identity/*
+
+  Outputs:
+    UploadBucketName:
+      Value: ${self:custom.bucket}
+    N8nInstanceId:
+      Value: !Ref N8nInstance
+    DatabaseHost:
+      Value: !GetAtt Database.Endpoint.Address
+    SesSenderUser:
+      Value: !Ref SesSender

@@ -3,8 +3,10 @@ export
 
 LOCAL_DB = DB_HOST=localhost DB_PORT=55432
 BACKEND = uv run --project backend
+STAGE ?= dev
+ENV_FILE ?= .env.aws
 
-.PHONY: up down logs migrate ingest api test lint fmt build deploy invoke-migrate
+.PHONY: up down logs migrate ingest api test lint fmt build params deploy invoke-migrate n8n-tunnel db-tunnel
 
 up:
 	docker compose --profile local up -d --wait postgres
@@ -47,8 +49,17 @@ build:
 	curl -sSf -o .build/lambda/loan_engine/rds-ca.pem https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
 	cd .build/lambda && zip -qr ../lambda.zip . -x '*__pycache__*'
 
+params:
+	sh scripts/push_params.sh $(ENV_FILE) $(STAGE)
+
 deploy: build
-	npx serverless@4 deploy --stage $(or $(STAGE),dev)
+	sh scripts/deploy.sh $(STAGE)
 
 invoke-migrate:
-	npx serverless@4 invoke --function migrate --stage $(or $(STAGE),dev)
+	npx serverless@4 invoke --function migrate --stage $(STAGE)
+
+n8n-tunnel:
+	sh scripts/tunnel.sh n8n $(STAGE)
+
+db-tunnel:
+	sh scripts/tunnel.sh db $(STAGE)

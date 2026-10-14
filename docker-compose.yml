@@ -56,18 +56,6 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
-  caddy:
-    image: caddy:2.10-alpine
-    profiles: [aws]
-    restart: unless-stopped
-    command: caddy reverse-proxy --from ${N8N_HOST} --to n8n:5678
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - caddy-data:/data
-
 volumes:
   postgres-data:
   n8n-data:
-  caddy-data:
