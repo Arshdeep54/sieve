@@ -1,0 +1,621 @@
+{
+  "id": "LoanMatchingWfB1",
+  "name": "B · User–loan matching",
+  "active": false,
+  "nodes": [
+    {
+      "id": "fcffd47b-6a57-534c-9dcd-2aee0060b893",
+      "name": "About",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -680,
+        -340
+      ],
+      "parameters": {
+        "content": "## B · User–loan matching\nTriggered by the ingest Lambda through an HMAC-signed webhook.\n\n**Funnel** — every stage only sees what the previous one could not decide:\n1. **SQL hard filter** checks income, CIBIL, age and employment for every user × product in one statement.\n   Products with no qualitative criteria are matched right here.\n2. The rest collapse into **profile classes** (employment × income band × CIBIL band × age band).\n3. **Cache** — verdicts are keyed by product version and class, so repeat profiles cost nothing.\n4. **LLM** judges only uncached classes, 20 per call, then verdicts fan back out to users.",
+        "width": 620,
+        "height": 300,
+        "color": 7
+      }
+    },
+    {
+      "id": "4422d739-0bec-5801-b85d-8e32a43b6814",
+      "name": "Batch ingested",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -680,
+        160
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "batch-ingested",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "webhookId": "b5d0c2f4-5f4e-4c8e-9a51-6f1f0e4b2a10"
+    },
+    {
+      "id": "89119985-2c90-50e9-8f70-280a6a45f515",
+      "name": "Verify signature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -440,
+        160
+      ],
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\n\nconst MAX_SKEW_SECONDS = 300;\n\nconst item = $input.first();\nconst header = String(item.json.headers?.['x-signature'] ?? '');\nconst parts = Object.fromEntries(header.split(',').map((part) => part.trim().split('=')));\nconst timestamp = Number(parts.t);\nconst rawBody = item.binary?.data ? Buffer.from(item.binary.data.data, 'base64').toString('utf8') : '';\n\nconst expected = crypto\n  .createHmac('sha256', $env.WEBHOOK_SECRET)\n  .update(`${parts.t}.${rawBody}`)\n  .digest('hex');\nconst given = String(parts.v1 ?? '');\nconst fresh = Number.isFinite(timestamp) && Math.abs(Date.now() / 1000 - timestamp) <= MAX_SKEW_SECONDS;\nconst matches =\n  given.length === expected.length && crypto.timingSafeEqual(Buffer.from(given), Buffer.from(expected));\nconst batchId = String(item.json.body?.batch_id ?? '');\nconst isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(batchId);\n\nreturn [{ json: { valid: fresh && matches && isUuid, batch_id: batchId } }];\n"
+      }
+    },
+    {
+      "id": "34300693-61bd-55b4-8aaf-1552aacfe5d8",
+      "name": "Signature valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -200,
+        160
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "d439e7ee-c5ac-5a29-a103-05d2f44b5b1c",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "fce20f31-348d-546e-9015-8b96c0343291",
+      "name": "Reject",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        40,
+        300
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\"error\": \"invalid signature\"}",
+        "options": {
+          "responseCode": 401
+        }
+      }
+    },
+    {
+      "id": "4ea57911-b050-5747-8398-c03981756820",
+      "name": "Accept",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        40,
+        60
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"accepted\": $json.batch_id } }}",
+        "options": {
+          "responseCode": 202
+        }
+      }
+    },
+    {
+      "id": "73b21db3-39fb-516a-892a-3b976f99292d",
+      "name": "Start matching",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        280,
+        60
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "with started as (\n    update upload_batches\n    set status = 'matching', execution_id = $2, error = null, updated_at = now()\n    where batch_id = $1::uuid\n      and status in ('ingested', 'matched', 'done', 'failed')\n    returning batch_id\n),\nstale_matches as (\n    delete from matches m\n    using users u\n    where u.batch_id in (select batch_id from started)\n      and m.user_id = u.user_id\n      and m.notified_at is null\n),\nstale_candidates as (\n    delete from match_candidates\n    where batch_id in (select batch_id from started)\n)\nselect batch_id, clock_timestamp() as started_at\nfrom started\n",
+        "options": {
+          "queryReplacement": "={{ [$json.batch_id, $execution.id] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "loanEnginePg001",
+          "name": "Loan Engine Postgres"
+        }
+      }
+    },
+    {
+      "id": "5ce205b4-fa58-56e5-872e-633df9aaa3cf",
+      "name": "SQL hard filter",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        520,
+        60
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "with batch_users as (\n    select *\n    from users\n    where batch_id = $1::uuid\n),\nproducts as (\n    select p.*,\n           coalesce(p.interest_rate_min,\n                    (select min(q.interest_rate_min)\n                       from loan_products q\n                      where q.lender = p.lender\n                        and q.is_active)) as best_rate\n    from loan_products p\n    where p.is_active and p.is_matchable\n),\npassing as (\n    select u.user_id,\n           p.product_id,\n           p.qualitative_criteria,\n           format('%s|inc%s|cs%s|age%s',\n                  u.employment_status,\n                  (u.monthly_income / 25000) * 25,\n                  (u.credit_score / 50) * 50,\n                  (u.age / 5) * 5) as class_key,\n           round(\n               0.5 * case when p.best_rate is null then 0.5 else least(greatest((24 - p.best_rate) / 14, 0), 1) end\n               + 0.25 * least(greatest((u.credit_score - coalesce(p.min_credit_score, 650)) / 100.0, 0), 1)\n               + 0.25 * least(u.monthly_income / (3.0 * coalesce(p.min_monthly_income, 25000)), 1),\n               3\n           ) as score,\n           concat_ws(' · ',\n               case when p.min_monthly_income is not null then\n                   format('Income ₹%s meets the ₹%s minimum',\n                          trim(to_char(u.monthly_income, '99,99,99,999')),\n                          trim(to_char(p.min_monthly_income, '99,99,99,999')))\n               end,\n               case when p.min_credit_score is not null then\n                   format('CIBIL %s clears %s', u.credit_score, p.min_credit_score)\n               end,\n               case when p.min_age is not null or p.max_age is not null then\n                   format('Age %s within %s–%s', u.age, coalesce(p.min_age, 18), coalesce(p.max_age, 100))\n               end,\n               case when cardinality(p.employment_types) > 0 then\n                   format('%s applicants accepted', initcap(replace(u.employment_status, '_', '-')))\n               end,\n               case when p.best_rate is not null then\n                   format('Rates from %s%% p.a.', p.best_rate)\n               end\n           ) as reason\n    from batch_users u\n    join products p\n      on (p.min_monthly_income is null or u.monthly_income >= p.min_monthly_income)\n     and (p.min_credit_score is null or u.credit_score >= p.min_credit_score)\n     and (p.max_credit_score is null or u.credit_score <= p.max_credit_score)\n     and (p.min_age is null or u.age >= p.min_age)\n     and (p.max_age is null or u.age <= p.max_age)\n     and (coalesce(cardinality(p.employment_types), 0) = 0 or u.employment_status = any (p.employment_types))\n),\ndirect as (\n    insert into matches (user_id, product_id, batch_id, stage, verdict, score, reason)\n    select user_id, product_id, $1::uuid, 'sql', 'eligible', score, reason\n    from passing\n    where qualitative_criteria is null\n    on conflict (user_id, product_id) do update set\n        batch_id = excluded.batch_id,\n        stage = excluded.stage,\n        verdict = excluded.verdict,\n        score = excluded.score,\n        reason = excluded.reason,\n        created_at = now(),\n        notified_at = null\n    returning 1\n),\ndeferred as (\n    insert into match_candidates (batch_id, user_id, product_id, class_key, score, reason)\n    select $1::uuid, user_id, product_id, class_key, score, reason\n    from passing\n    where qualitative_criteria is not null\n    returning 1\n)\nselect (select count(*) from batch_users)::int as users_in_batch,\n       (select count(*) from products)::int as products_active,\n       ((select count(*) from batch_users) * (select count(*) from products))::int as pairs_total,\n       (select count(*) from passing)::int as pairs_after_sql,\n       (select count(*) from direct)::int as sql_matches,\n       (select count(*) from deferred)::int as pairs_deferred\n",
+        "options": {
+          "queryReplacement": "={{ [$json.batch_id] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "loanEnginePg001",
+          "name": "Loan Engine Postgres"
+        }
+      }
+    },
+    {
+      "id": "f62ca329-3579-5b88-9959-444093fbfd2f",
+      "name": "Group profile classes",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        760,
+        60
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select c.product_id,\n       p.version as product_version,\n       p.lender,\n       p.product_name,\n       p.qualitative_criteria,\n       c.class_key,\n       count(*)::int as users,\n       e.verdict as cached_verdict\nfrom match_candidates c\njoin loan_products p on p.product_id = c.product_id\nleft join llm_eval_cache e\n       on e.product_id = c.product_id\n      and e.product_version = p.version\n      and e.class_key = c.class_key\nwhere c.batch_id = $1::uuid\ngroup by c.product_id, p.version, p.lender, p.product_name, p.qualitative_criteria, c.class_key, e.verdict\norder by c.product_id, c.class_key\n",
+        "options": {
+          "queryReplacement": "={{ [$('Start matching').first().json.batch_id] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "loanEnginePg001",
+          "name": "Loan Engine Postgres"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "id": "e80ba2cd-3fa3-5bf2-8eb1-f669e0d0e297",
+      "name": "Plan LLM calls",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        60
+      ],
+      "parameters": {
+        "jsCode": "const prompt = \"You review Indian personal loan eligibility. A SQL filter has already confirmed every applicant class below meets the\\nproduct's numeric rules: income, CIBIL score, age band and employment type. Judge only the product's remaining\\nqualitative criteria against each applicant class.\\n\\n- eligible: the class clearly satisfies the qualitative criteria.\\n- likely: the criteria depend on facts the profile does not include, such as work experience or employer category,\\n  and nothing in the profile contradicts them.\\n- ineligible: something in the profile contradicts the criteria, e.g. age at loan maturity exceeds the limit\\n  for the longest tenure, or the income band cannot meet a city- or employer-specific minimum.\\n\\nGive a reason of at most 18 words written for the applicant. Return one verdict for every class id.\";\nconst schema = {\"type\": \"object\", \"additionalProperties\": false, \"required\": [\"verdicts\"], \"properties\": {\"verdicts\": {\"type\": \"array\", \"items\": {\"type\": \"object\", \"additionalProperties\": false, \"required\": [\"id\", \"verdict\", \"reason\"], \"properties\": {\"id\": {\"type\": \"integer\"}, \"verdict\": {\"type\": \"string\", \"enum\": [\"eligible\", \"likely\", \"ineligible\"]}, \"reason\": {\"type\": \"string\"}}}}}};\nconst CLASSES_PER_REQUEST = 20;\n\nconst EMPLOYMENT = { salaried: 'Salaried', self_employed: 'Self-employed professional', business: 'Business owner' };\nconst rupees = (value) => `₹${Number(value).toLocaleString('en-IN')}`;\n\nfunction describe(classKey) {\n  const [employment, income, score, age] = classKey.split('|');\n  const incomeFloor = Number(income.slice(3)) * 1000;\n  const scoreFloor = Number(score.slice(2));\n  const ageFloor = Number(age.slice(3));\n  return [\n    EMPLOYMENT[employment] ?? employment,\n    `net monthly income ${rupees(incomeFloor)}–${rupees(incomeFloor + 24999)}`,\n    `CIBIL ${scoreFloor}–${scoreFloor + 49}`,\n    `age ${ageFloor}–${ageFloor + 4}`,\n  ].join(', ');\n}\n\nconst rows = $input.all().map((item) => item.json).filter((row) => row.class_key);\nconst uncached = rows.filter((row) => !row.cached_verdict);\n\nconst byProduct = new Map();\nfor (const row of uncached) {\n  if (!byProduct.has(row.product_id)) byProduct.set(row.product_id, []);\n  byProduct.get(row.product_id).push(row);\n}\n\nconst requests = [];\nfor (const productRows of byProduct.values()) {\n  for (let start = 0; start < productRows.length; start += CLASSES_PER_REQUEST) {\n    const chunk = productRows.slice(start, start + CLASSES_PER_REQUEST);\n    const product = chunk[0];\n    const classes = chunk.map((row, index) => `${index + 1}. ${describe(row.class_key)}`).join('\\n');\n    requests.push({\n      product_id: product.product_id,\n      product_version: product.product_version,\n      class_keys: chunk.map((row) => row.class_key),\n      request: {\n        model: $env.OPENAI_MODEL,\n        temperature: 0,\n        response_format: { type: 'json_schema', json_schema: { name: 'class_verdicts', strict: true, schema } },\n        messages: [\n          { role: 'system', content: prompt },\n          {\n            role: 'user',\n            content:\n              `Product: ${product.lender} · ${product.product_name}\\n` +\n              `Qualitative criteria: ${product.qualitative_criteria}\\n\\nApplicant classes:\\n${classes}`,\n          },\n        ],\n      },\n    });\n  }\n}\n\nreturn [\n  {\n    json: {\n      stats: {\n        classes_to_judge: rows.length,\n        cache_hits: rows.length - uncached.length,\n        llm_calls: requests.length,\n      },\n      requests,\n    },\n  },\n];\n"
+      }
+    },
+    {
+      "id": "6e639306-bad5-58c7-8f79-c40cd83bbf95",
+      "name": "Needs LLM?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1240,
+        60
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "b8c28dec-b70a-5004-a967-49514a4c3e4b",
+              "leftValue": "={{ $json.requests.length > 0 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "6f01b892-7bd9-505d-bfdf-24f6ebddf6f8",
+      "name": "Queue judge calls",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1480,
+        -60
+      ],
+      "parameters": {
+        "jsCode": "const MAX_ROUNDS = 4;\n\nconst calls =\n  $runIndex === 0 ? $('Plan LLM calls').first().json.requests : $('Parse verdicts').last().json.retry;\n\nif ($runIndex >= MAX_ROUNDS) {\n  const reason = $('Parse verdicts').last().json.last_error;\n  throw new Error(`${calls.length} OpenAI calls still failing after ${MAX_ROUNDS} rounds: ${reason}`);\n}\n\nreturn calls.map((call) => ({ json: call }));\n"
+      }
+    },
+    {
+      "id": "7ea15bff-e200-5e25-a1b6-405065fa903c",
+      "name": "Judge classes (OpenAI)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1720,
+        -60
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.request) }}",
+        "options": {
+          "timeout": 180000,
+          "batching": {
+            "batch": {
+              "batchSize": 4,
+              "batchInterval": 0
+            }
+          }
+        }
+      },
+      "credentials": {
+        "openAiApi": {
+          "id": "loanEngineAi001",
+          "name": "Loan Engine OpenAI"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "86995528-93be-5e6d-990a-c602603101b1",
+      "name": "Parse verdicts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1960,
+        -60
+      ],
+      "parameters": {
+        "jsCode": "const VERDICTS = new Set(['eligible', 'likely', 'ineligible']);\nconst FALLBACK_REASON = 'Meets every numeric rule; remaining criteria are checked by the lender.';\n\nconst sent = $('Queue judge calls').all(0, $runIndex).map((item) => item.json);\nconst rows = [];\nconst retry = [];\nlet lastError = null;\n\n$input.all().forEach((item, index) => {\n  const call = sent[index];\n  const content = item.json.choices?.[0]?.message?.content;\n  if (!content) {\n    retry.push(call);\n    lastError = item.json.error?.message ?? item.json.error ?? 'empty response';\n    return;\n  }\n  const answered = new Map((JSON.parse(content).verdicts ?? []).map((verdict) => [verdict.id, verdict]));\n  call.class_keys.forEach((classKey, position) => {\n    const answer = answered.get(position + 1);\n    const valid = answer && VERDICTS.has(answer.verdict) && String(answer.reason ?? '').trim();\n    rows.push({\n      product_id: call.product_id,\n      product_version: call.product_version,\n      class_key: classKey,\n      verdict: valid ? answer.verdict : 'likely',\n      reason: valid ? answer.reason.trim().slice(0, 200) : FALLBACK_REASON,\n    });\n  });\n});\n\nreturn [{ json: { rows, retry, last_error: lastError } }];\n"
+      }
+    },
+    {
+      "id": "44d4a9ff-f33e-5afd-9e6c-23483af06584",
+      "name": "Cache verdicts",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        2200,
+        -60
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "insert into llm_eval_cache (product_id, product_version, class_key, verdict, reason)\nselect product_id, product_version, class_key, verdict, reason\nfrom jsonb_to_recordset($1::jsonb) as v (\n    product_id integer,\n    product_version integer,\n    class_key text,\n    verdict text,\n    reason text\n)\non conflict (product_id, product_version, class_key) do nothing\nreturning 1\n",
+        "options": {
+          "queryReplacement": "={{ [JSON.stringify($json.rows)] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "loanEnginePg001",
+          "name": "Loan Engine Postgres"
+        }
+      },
+      "alwaysOutputData": true,
+      "executeOnce": true
+    },
+    {
+      "id": "eec7fc03-f300-5f5e-9e1c-607375d63d46",
+      "name": "Calls left to retry?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2440,
+        -60
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "711f1654-7f53-5c58-afaf-71908cf4da7e",
+              "leftValue": "={{ $('Parse verdicts').last().json.retry.length > 0 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "d0b73e3e-c41c-5ea9-94ac-9668ccaacc1a",
+      "name": "Fan out + record funnel",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        2680,
+        60
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "with fanned as (\n    insert into matches (user_id, product_id, batch_id, stage, verdict, score, reason)\n    select c.user_id,\n           c.product_id,\n           c.batch_id,\n           case when e.created_at < $2::timestamptz then 'cache' else 'llm' end,\n           e.verdict,\n           round(c.score * case when e.verdict = 'likely' then 0.85 else 1 end, 3),\n           c.reason || ' · ' || e.reason\n    from match_candidates c\n    join loan_products p on p.product_id = c.product_id\n    join llm_eval_cache e\n      on e.product_id = c.product_id\n     and e.product_version = p.version\n     and e.class_key = c.class_key\n    where c.batch_id = $1::uuid\n      and e.verdict <> 'ineligible'\n    on conflict (user_id, product_id) do update set\n        batch_id = excluded.batch_id,\n        stage = excluded.stage,\n        verdict = excluded.verdict,\n        score = excluded.score,\n        reason = excluded.reason,\n        created_at = now(),\n        notified_at = null\n    returning 1\n),\ncleared as (\n    delete from match_candidates\n    where batch_id = $1::uuid\n),\nrecorded as (\n    insert into match_runs (\n        batch_id, users_in_batch, products_active, pairs_total, pairs_after_sql, sql_matches, pairs_deferred,\n        classes_to_judge, cache_hits, llm_calls, llm_matches, total_matches, duration_ms\n    )\n    select $1::uuid,\n           ($3::jsonb ->> 'users_in_batch')::int,\n           ($3::jsonb ->> 'products_active')::int,\n           ($3::jsonb ->> 'pairs_total')::int,\n           ($3::jsonb ->> 'pairs_after_sql')::int,\n           ($3::jsonb ->> 'sql_matches')::int,\n           ($3::jsonb ->> 'pairs_deferred')::int,\n           ($3::jsonb ->> 'classes_to_judge')::int,\n           ($3::jsonb ->> 'cache_hits')::int,\n           ($3::jsonb ->> 'llm_calls')::int,\n           (select count(*) from fanned),\n           ($3::jsonb ->> 'sql_matches')::int + (select count(*) from fanned),\n           (extract(epoch from clock_timestamp() - $2::timestamptz) * 1000)::int\n    on conflict (batch_id) do update set\n        users_in_batch = excluded.users_in_batch,\n        products_active = excluded.products_active,\n        pairs_total = excluded.pairs_total,\n        pairs_after_sql = excluded.pairs_after_sql,\n        sql_matches = excluded.sql_matches,\n        pairs_deferred = excluded.pairs_deferred,\n        classes_to_judge = excluded.classes_to_judge,\n        cache_hits = excluded.cache_hits,\n        llm_calls = excluded.llm_calls,\n        llm_matches = excluded.llm_matches,\n        total_matches = excluded.total_matches,\n        duration_ms = excluded.duration_ms,\n        created_at = now()\n    returning total_matches\n)\nupdate upload_batches\nset status = 'matched', updated_at = now()\nwhere batch_id = $1::uuid\nreturning batch_id, (select total_matches from recorded) as total_matches\n",
+        "options": {
+          "queryReplacement": "={{ [$('Start matching').first().json.batch_id, $('Start matching').first().json.started_at, JSON.stringify({ ...$('SQL hard filter').first().json, ...$('Plan LLM calls').first().json.stats })] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "loanEnginePg001",
+          "name": "Loan Engine Postgres"
+        }
+      },
+      "executeOnce": true
+    },
+    {
+      "id": "c57567a5-2115-5da8-ab21-e989058b7cfc",
+      "name": "Notify users",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        2920,
+        60
+      ],
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "LoanNotifyWfC001",
+          "mode": "id"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "batch_id": "={{ $json.batch_id }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "batch_id",
+              "displayName": "batch_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {
+          "waitForSubWorkflow": false
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Batch ingested": {
+      "main": [
+        [
+          {
+            "node": "Verify signature",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify signature": {
+      "main": [
+        [
+          {
+            "node": "Signature valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Signature valid?": {
+      "main": [
+        [
+          {
+            "node": "Accept",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reject",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Accept": {
+      "main": [
+        [
+          {
+            "node": "Start matching",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start matching": {
+      "main": [
+        [
+          {
+            "node": "SQL hard filter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SQL hard filter": {
+      "main": [
+        [
+          {
+            "node": "Group profile classes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Group profile classes": {
+      "main": [
+        [
+          {
+            "node": "Plan LLM calls",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Plan LLM calls": {
+      "main": [
+        [
+          {
+            "node": "Needs LLM?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Needs LLM?": {
+      "main": [
+        [
+          {
+            "node": "Queue judge calls",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Fan out + record funnel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Queue judge calls": {
+      "main": [
+        [
+          {
+            "node": "Judge classes (OpenAI)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Judge classes (OpenAI)": {
+      "main": [
+        [
+          {
+            "node": "Parse verdicts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse verdicts": {
+      "main": [
+        [
+          {
+            "node": "Cache verdicts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cache verdicts": {
+      "main": [
+        [
+          {
+            "node": "Calls left to retry?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calls left to retry?": {
+      "main": [
+        [
+          {
+            "node": "Queue judge calls",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Fan out + record funnel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fan out + record funnel": {
+      "main": [
+        [
+          {
+            "node": "Notify users",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "all",
+    "timezone": "Asia/Kolkata",
+    "errorWorkflow": "LoanErrorsWfE001"
+  },
+  "pinData": {},
+  "tags": []
+}

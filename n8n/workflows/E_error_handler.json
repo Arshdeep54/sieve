@@ -1,0 +1,142 @@
+{
+  "id": "LoanErrorsWfE001",
+  "name": "E · Error handler",
+  "active": false,
+  "nodes": [
+    {
+      "id": "6f938c37-17bc-5b1a-a3d6-003a3589e2cf",
+      "name": "About",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -200,
+        -260
+      ],
+      "parameters": {
+        "content": "## E · Error handler\nSet as the error workflow of A, B and C.\n\n- Every failure is stored in `workflow_errors`.\n- A batch whose matching or notification run failed is marked `failed`, so the UI shows it instead of spinning, and it can be re-triggered.\n- The admin (`SES_FROM`) gets an email alert.",
+        "width": 480,
+        "height": 220,
+        "color": 7
+      }
+    },
+    {
+      "id": "057bc23a-cf28-52f9-b8c9-23a08ab89199",
+      "name": "On workflow error",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        -200,
+        80
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "bc9eeeb9-f5ee-5cf3-915a-76a0480cbd19",
+      "name": "Record error",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        40,
+        80
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "with failed_batch as (\n    update upload_batches\n    set status = 'failed', error = left($3, 500), updated_at = now()\n    where execution_id = $4\n      and status in ('matching', 'notifying')\n    returning batch_id\n)\ninsert into workflow_errors (workflow, node, message, batch_id)\nvalues ($1, $2, $3, (select batch_id from failed_batch))\nreturning error_id, workflow, node, message, batch_id\n",
+        "options": {
+          "queryReplacement": "={{ [$json.workflow?.name ?? 'unknown', $json.execution?.lastNodeExecuted ?? null, String($json.execution?.error?.message ?? $json.trigger?.error?.message ?? 'Unknown error').slice(0, 2000), String($json.execution?.id ?? '')] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "loanEnginePg001",
+          "name": "Loan Engine Postgres"
+        }
+      }
+    },
+    {
+      "id": "4ef794a2-4f04-527b-b772-0824e5a53a09",
+      "name": "Compose alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        280,
+        80
+      ],
+      "parameters": {
+        "jsCode": "const error = $json;\nconst executionUrl = $('On workflow error').first().json.execution?.url ?? '';\nconst lines = [\n  `Workflow: ${error.workflow}`,\n  `Node: ${error.node ?? 'n/a'}`,\n  `Batch: ${error.batch_id ?? 'n/a'}`,\n  `Error: ${error.message}`,\n  executionUrl ? `Execution: ${executionUrl}` : null,\n].filter(Boolean);\n\nreturn {\n  json: {\n    message: {\n      FromEmailAddress: $env.SES_FROM,\n      Destination: { ToAddresses: [$env.SES_FROM] },\n      Content: {\n        Simple: {\n          Subject: { Data: `[loan-engine] ${error.workflow} failed`, Charset: 'UTF-8' },\n          Body: { Text: { Data: lines.join('\\n'), Charset: 'UTF-8' } },\n        },\n      },\n    },\n  },\n};\n",
+        "mode": "runOnceForEachItem"
+      }
+    },
+    {
+      "id": "5974f589-79c7-59ed-a2e1-59655986a2f5",
+      "name": "Email admin",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        520,
+        80
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://email.{{ $env.AWS_REGION }}.amazonaws.com/v2/email/outbound-emails",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "aws",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.message) }}",
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "credentials": {
+        "aws": {
+          "id": "loanEngineSes01",
+          "name": "Loan Engine SES"
+        }
+      },
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "On workflow error": {
+      "main": [
+        [
+          {
+            "node": "Record error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record error": {
+      "main": [
+        [
+          {
+            "node": "Compose alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compose alert": {
+      "main": [
+        [
+          {
+            "node": "Email admin",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "all",
+    "timezone": "Asia/Kolkata"
+  },
+  "pinData": {},
+  "tags": []
+}

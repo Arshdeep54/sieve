@@ -236,7 +236,7 @@
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify($json.request) }}",
         "options": {
-          "timeout": 120000
+          "timeout": 180000
         }
       },
       "credentials": {

@@ -11,6 +11,7 @@ create table upload_batches (
     rejected_rows integer,
     errors_key    text,
     error         text,
+    execution_id  text,
     created_at    timestamptz not null default now(),
     updated_at    timestamptz not null default now()
 );
