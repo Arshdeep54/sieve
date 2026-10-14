@@ -375,7 +375,9 @@ resources:
               Statement:
                 - Effect: Allow
                   Action: ses:SendEmail
-                  Resource: !Sub arn:aws:ses:${AWS::Region}:${AWS::AccountId}:identity/*
+                  Resource:
+                    - !Sub arn:aws:ses:${AWS::Region}:${AWS::AccountId}:identity/*
+                    - !Sub arn:aws:ses:${AWS::Region}:${AWS::AccountId}:configuration-set/*
 
   Outputs:
     UploadBucketName:
