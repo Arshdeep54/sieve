@@ -4,7 +4,7 @@ export
 LOCAL_DB = DB_HOST=localhost DB_PORT=55432
 BACKEND = uv run --project backend
 
-.PHONY: up down logs migrate ingest test lint fmt build deploy invoke-migrate
+.PHONY: up down logs migrate ingest api test lint fmt build deploy invoke-migrate
 
 up:
 	docker compose --profile local up -d --wait postgres
@@ -22,6 +22,9 @@ migrate:
 
 ingest:
 	$(LOCAL_DB) $(BACKEND) python scripts/ingest_local.py $(FILE)
+
+api:
+	$(LOCAL_DB) $(BACKEND) python scripts/local_api.py
 
 test:
 	$(LOCAL_DB) $(BACKEND) pytest backend/tests -q

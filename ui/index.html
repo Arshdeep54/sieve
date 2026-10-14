@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Loan Match</title>
+    <meta name="description" content="Upload a user file and match every user to live personal loan offers." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=IBM+Plex+Sans:wght@400;500;600&display=swap"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="masthead">
+      <a class="brand" href="./">
+        <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 5h16l-6 7v6l-4 2v-8z" />
+        </svg>
+        Loan Match
+      </a>
+    </header>
+
+    <main class="page">
+      <section class="intro" aria-labelledby="intro-title">
+        <h1 id="intro-title">Match a user file against live loan offers</h1>
+        <p class="lede">
+          Drop a CSV of users. Every row is validated, each user is checked against personal loans read from lender
+          sites, and the best fits go out by email.
+        </p>
+      </section>
+
+      <section class="upload" aria-label="Upload users">
+        <label class="dropzone" id="dropzone" data-state="idle">
+          <input id="file-input" type="file" accept=".csv,text/csv" class="visually-hidden" />
+          <svg class="dropzone-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 16V4m0 0-4 4m4-4 4 4M5 14v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4" />
+          </svg>
+          <span class="dropzone-title" id="dropzone-title">Drop a users CSV here, or choose a file</span>
+          <span class="dropzone-hint" id="dropzone-hint">
+            Columns: user_id, email, monthly_income, credit_score, employment_status, age. Up to 50 MB.
+          </span>
+          <span class="progress" id="upload-progress" hidden>
+            <span class="progress-bar" id="upload-progress-bar"></span>
+          </span>
+        </label>
+        <p class="field-error" id="upload-error" role="alert" hidden></p>
+      </section>
+
+      <section class="batch" id="batch" aria-live="polite" hidden>
+        <div class="batch-head">
+          <h2 id="batch-title">Upload</h2>
+          <p class="batch-meta" id="batch-meta"></p>
+        </div>
+
+        <p class="notice" id="batch-notice" hidden></p>
+
+        <ol class="timeline" id="timeline">
+          <li data-step="upload"><span class="step-label">Received</span><span class="step-detail"></span></li>
+          <li data-step="ingest"><span class="step-label">Validated and stored</span><span class="step-detail"></span></li>
+          <li data-step="match"><span class="step-label">Matched to loans</span><span class="step-detail"></span></li>
+          <li data-step="notify"><span class="step-label">Users emailed</span><span class="step-detail"></span></li>
+        </ol>
+
+        <div class="figures" id="ingest-figures" hidden>
+          <div class="figure">
+            <span class="figure-value" id="rows-total">0</span>
+            <span class="figure-label">rows read</span>
+          </div>
+          <div class="figure">
+            <span class="figure-value" id="rows-valid">0</span>
+            <span class="figure-label">users stored</span>
+          </div>
+          <div class="figure figure-warn">
+            <span class="figure-value" id="rows-rejected">0</span>
+            <span class="figure-label">rows rejected</span>
+            <a class="figure-link" id="errors-link" href="#" hidden download>Download rejected rows</a>
+          </div>
+        </div>
+
+        <section class="funnel-section" id="funnel-section" aria-labelledby="funnel-title" hidden>
+          <div class="section-head">
+            <h3 id="funnel-title">How the matches were found</h3>
+            <p class="section-note">
+              Each step only handles what the step before could not settle. Bar length uses a log scale.
+            </p>
+          </div>
+          <ol class="funnel" id="funnel"></ol>
+        </section>
+
+        <div class="split">
+          <section class="products-section" id="products-section" aria-labelledby="products-title" hidden>
+            <h3 id="products-title">Matches by loan</h3>
+            <table class="products">
+              <thead>
+                <tr>
+                  <th scope="col">Loan</th>
+                  <th scope="col" class="num">Users</th>
+                  <th scope="col" class="num">Avg fit</th>
+                </tr>
+              </thead>
+              <tbody id="products-body"></tbody>
+            </table>
+          </section>
+
+          <section class="emails-section" id="emails-section" aria-labelledby="emails-title" hidden>
+            <h3 id="emails-title">Emails</h3>
+            <dl class="emails">
+              <div><dt>Sent</dt><dd id="emails-sent">0</dd></div>
+              <div><dt>Held back by the demo limit</dt><dd id="emails-suppressed">0</dd></div>
+              <div><dt>Failed</dt><dd id="emails-failed">0</dd></div>
+            </dl>
+            <p class="section-note">
+              Demo mode emails only the best-matched users, and every address is rewritten to a test inbox.
+            </p>
+          </section>
+        </div>
+
+        <button class="button" type="button" id="upload-another" hidden>Upload another file</button>
+      </section>
+    </main>
+
+    <script src="app.js" defer></script>
+  </body>
+</html>
