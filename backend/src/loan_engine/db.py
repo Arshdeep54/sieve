@@ -7,13 +7,14 @@ _connection: pg8000.native.Connection | None = None
 
 
 def connect() -> pg8000.native.Connection:
+    use_ssl = os.environ.get("DB_SSL") == "true"
     return pg8000.native.Connection(
         host=os.environ["DB_HOST"],
         port=int(os.environ.get("DB_PORT", "5432")),
         database=os.environ["DB_NAME"],
         user=os.environ["DB_USER"],
         password=os.environ["DB_PASSWORD"],
-        ssl_context=ssl.create_default_context() if os.environ.get("DB_SSL") == "true" else None,
+        ssl_context=ssl.create_default_context(cafile=os.environ.get("DB_SSL_CA")) if use_ssl else None,
     )
 
 

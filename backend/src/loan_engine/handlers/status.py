@@ -2,12 +2,13 @@ import os
 import uuid
 
 import boto3
+from botocore.config import Config
 
 from loan_engine import report
 from loan_engine.db import shared_connection
 from loan_engine.handlers.http import json_response
 
-s3 = boto3.client("s3")
+s3 = boto3.client("s3", config=Config(signature_version="s3v4", s3={"addressing_style": "virtual"}))
 
 
 def handler(event: dict, context: object) -> dict:
