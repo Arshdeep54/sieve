@@ -1,5 +1,5 @@
 const REQUIRED_COLUMNS = ['user_id', 'email', 'monthly_income', 'credit_score', 'employment_status', 'age'];
-const MAX_BYTES = 50 * 1024 * 1024;
+const MAX_BYTES = 200 * 1024 * 1024;
 const POLL_MS = 2000;
 const FINAL_STATUSES = new Set(['done', 'failed', 'duplicate']);
 const STEPS = ['upload', 'ingest', 'match', 'notify'];
@@ -62,7 +62,7 @@ function setDropzone(state, title) {
 async function checkFile(file) {
   if (!file.name.toLowerCase().endsWith('.csv')) return 'Choose a .csv file.';
   if (file.size === 0) return 'This file is empty.';
-  if (file.size > MAX_BYTES) return 'This file is larger than 50 MB. Split it and upload the parts.';
+  if (file.size > MAX_BYTES) return 'This file is larger than 200 MB. Split it and upload the parts.';
   const head = await file.slice(0, 64 * 1024).text();
   const header = head.replace(/^﻿/, '').split(/\r?\n/, 1)[0];
   const columns = header.split(',').map((column) => column.trim().replace(/^"|"$/g, '').toLowerCase());

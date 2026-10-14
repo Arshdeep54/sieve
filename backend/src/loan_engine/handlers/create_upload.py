@@ -8,7 +8,7 @@ from loan_engine import batches
 from loan_engine.db import shared_connection
 from loan_engine.handlers.http import json_response
 
-MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 UPLOAD_URL_TTL_SECONDS = 600
 
 s3 = boto3.client("s3", config=Config(signature_version="s3v4", s3={"addressing_style": "virtual"}))
