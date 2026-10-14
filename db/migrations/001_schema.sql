@@ -82,7 +82,7 @@ create table loan_products (
                           ) stored,
     first_seen_at         timestamptz not null default now(),
     last_seen_at          timestamptz not null default now(),
-    unique (lender, product_name)
+    unique (source_id, lender, product_name)
 );
 
 create table matches (
@@ -99,6 +99,16 @@ create table matches (
 );
 
 create index matches_batch_pending on matches (batch_id) where notified_at is null;
+
+create unlogged table match_candidates (
+    batch_id   uuid not null,
+    user_id    uuid not null,
+    product_id integer not null,
+    class_key  text not null,
+    score      numeric(4, 3) not null,
+    reason     text not null,
+    primary key (batch_id, user_id, product_id)
+);
 
 create table llm_eval_cache (
     product_id      integer not null references loan_products (product_id),
@@ -117,6 +127,7 @@ create table match_runs (
     pairs_total      integer not null,
     pairs_after_sql  integer not null,
     sql_matches      integer not null,
+    pairs_deferred   integer not null,
     classes_to_judge integer not null,
     cache_hits       integer not null,
     llm_calls        integer not null,
@@ -130,7 +141,7 @@ create table notifications (
     notification_id bigserial primary key,
     user_id         uuid not null references users (user_id),
     batch_id        uuid not null references upload_batches (batch_id),
-    to_address      text not null,
+    to_address      text,
     product_ids     integer[] not null,
     status          text not null check (status in ('sent', 'suppressed', 'failed')),
     ses_message_id  text,

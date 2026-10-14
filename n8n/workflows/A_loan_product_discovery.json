@@ -1,0 +1,515 @@
+{
+  "id": "LoanCrawlerWfA01",
+  "name": "A · Loan product discovery",
+  "active": false,
+  "nodes": [
+    {
+      "id": "3f0ee022-dfed-52a5-a064-b268d70cfe0c",
+      "name": "About",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -560,
+        -260
+      ],
+      "parameters": {
+        "content": "## A · Loan product discovery\nRuns daily at 06:00 IST. Crawls each active row of `crawl_sources` one at a time.\n\n- The page text is fingerprinted with SHA-256. **Unchanged pages skip the LLM entirely.**\n- Changed pages go to OpenAI with a strict JSON schema, then every value is range-checked.\n- Products are upserted; a criteria change bumps `version`, which invalidates cached LLM verdicts.\n- Products that vanish from a page are retired, never deleted. An empty extraction keeps the last known products.",
+        "width": 520,
+        "height": 260,
+        "color": 7
+      }
+    },
+    {
+      "id": "99fcc3d4-3324-5a60-ac43-0fc13f99fcc9",
+      "name": "Every day at 06:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -560,
+        80
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 6
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "61a7e48e-942a-5c2b-90ea-0814395cbefe",
+      "name": "Run now",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -560,
+        260
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "ab39e599-ac3a-5e4b-b106-31a907b2bc04",
+      "name": "Load active sources",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -320,
+        160
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select s.source_id,\n       s.lender,\n       s.url,\n       (select r.content_hash\n          from crawl_runs r\n         where r.source_id = s.source_id\n           and r.status in ('updated', 'unchanged')\n         order by r.created_at desc\n         limit 1) as last_hash\nfrom crawl_sources s\nwhere s.is_active\norder by s.source_id\n",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "loanEnginePg001",
+          "name": "Loan Engine Postgres"
+        }
+      }
+    },
+    {
+      "id": "c70232fe-8d5b-5264-b3a1-761b99ae7b88",
+      "name": "Loop over sources",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -80,
+        160
+      ],
+      "parameters": {
+        "options": {}
+      }
+    },
+    {
+      "id": "ab5791c0-707b-5841-ba4d-30b08c1f9c0c",
+      "name": "Fetch page",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        160,
+        260
+      ],
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
+            },
+            {
+              "name": "Accept-Language",
+              "value": "en-IN,en;q=0.9"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text",
+              "outputPropertyName": "html"
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "3578cb73-8b37-5c2d-a697-ef88453ac8e3",
+      "name": "Fetched?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        400,
+        260
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "a19ac0ab-53bc-5167-916c-238cd3fb1f15",
+              "leftValue": "={{ !$json.error && !!$json.html }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "fe926560-bbcd-5eb9-a9fb-9a521abeb402",
+      "name": "Clean and fingerprint page",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        640,
+        160
+      ],
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\n\nconst RELEVANT = /eligib|income|salary|salaried|self[- ]employed|business|professional|age\\b|years|cibil|credit score|interest|rate|% p\\.a|tenure|loan amount|lakh|crore|processing fee|experience|employ|nationality|resident|itr|turnover/i;\nconst ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '\"', apos: \"'\", nbsp: ' ', rsquo: \"'\", lsquo: \"'\", ndash: '-', mdash: '-', rupee: '₹' };\n\nconst decode = (text) =>\n  text\n    .replace(/&#(\\d+);/g, (_, digits) => String.fromCodePoint(Number(digits)))\n    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))\n    .replace(/&([a-z]+);/gi, (entity, name) => ENTITIES[name.toLowerCase()] ?? entity);\n\nconst toLines = (html) =>\n  html\n    .replace(/<(script|style|noscript|svg|iframe|header|nav|footer)\\b[\\s\\S]*?<\\/\\1>/gi, ' ')\n    .replace(/<\\/?(p|li|div|br|h[1-6]|tr|td|th|section|article|ul|ol|table)\\b[^>]*>/gi, '\\n')\n    .replace(/<[^>]+>/g, ' ');\n\nfunction readableLines(html) {\n  return toLines(decode(toLines(html)))\n    .split('\\n')\n    .map((line) => decode(line).replace(/\\s+/g, ' ').trim())\n    .filter((line) => line.length > 2);\n}\n\nfunction relevantText(html) {\n  const lines = readableLines(html);\n  const keep = new Set();\n  lines.forEach((line, index) => {\n    if (line.length < 600 && !line.includes('\":') && RELEVANT.test(line)) keep.add(index - 1).add(index).add(index + 1);\n  });\n  const picked = [...keep].sort((a, b) => a - b).map((index) => lines[index]).filter(Boolean);\n  return [...new Set(picked)].join('\\n').slice(0, 16000);\n}\n\nconst source = $('Loop over sources').item.json;\nconst text = relevantText(String($json.html));\nconst contentHash = crypto.createHash('sha256').update(text).digest('hex');\n\nreturn {\n  json: {\n    ...source,\n    text,\n    content_hash: contentHash,\n    changed: contentHash !== source.last_hash,\n  },\n};\n",
+        "mode": "runOnceForEachItem"
+      }
+    },
+    {
+      "id": "124c7e97-ffb2-507f-b52c-8e810cda1404",
+      "name": "Page changed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1120,
+        160
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "ede54f10-77bc-5795-9708-0ddef3ddf063",
+              "leftValue": "={{ $json.changed }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "ee49047d-dd2e-5b89-a435-fa22aab4e5f7",
+      "name": "Build extraction request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1360,
+        60
+      ],
+      "parameters": {
+        "jsCode": "const prompt = \"You extract personal loan products from the text of an Indian bank or loan-aggregator web page.\\nReturn every distinct personal loan product the page describes.\\n\\n- lender: the bank or NBFC offering the product. On aggregator pages each lender is its own product.\\n- product_name: the product name. If the page names none, use \\\"<lender> Personal Loan\\\".\\n  When the page gives different criteria for salaried and self-employed applicants, return one product per segment,\\n  e.g. \\\"<lender> Personal Loan (Salaried)\\\" and \\\"<lender> Personal Loan (Self-employed)\\\". Never merge their criteria.\\n- interest_rate_min / interest_rate_max: annual interest rate in percent, e.g. 10.85.\\n- min_monthly_income: minimum net monthly income in rupees. Divide annual figures by 12. 1 lakh = 100000.\\n  If the threshold varies by city, employer or employment type, use the lowest and explain the rest in qualitative_criteria.\\n- min_credit_score / max_credit_score: CIBIL score bounds.\\n- min_age / max_age: applicant age limits in years.\\n- employment_types: which of salaried, self_employed, business the product accepts.\\n  Self-employed professionals (doctors, CAs, architects) are self_employed.\\n  Self-employed non-professionals, traders and business owners are business.\\n  Return an empty list when the page does not say.\\n- qualitative_criteria: one or two sentences with applicant-profile rules the numeric fields cannot express,\\n  such as work experience, employer category, city of residence, age at loan maturity, business vintage or ITR history.\\n  Null when there are none. Never list documents.\\n- max_amount: largest loan amount in rupees. max_tenure_months: longest tenure in months.\\n- processing_fee: short text as stated on the page.\\n- confidence: 0 to 1, how explicitly the page states the eligibility criteria.\\n\\nUse null for anything the page does not state. Never invent values.\";\nconst schema = {\"type\": \"object\", \"additionalProperties\": false, \"required\": [\"products\"], \"properties\": {\"products\": {\"type\": \"array\", \"items\": {\"type\": \"object\", \"additionalProperties\": false, \"required\": [\"lender\", \"product_name\", \"interest_rate_min\", \"interest_rate_max\", \"min_monthly_income\", \"min_credit_score\", \"max_credit_score\", \"min_age\", \"max_age\", \"employment_types\", \"qualitative_criteria\", \"max_amount\", \"max_tenure_months\", \"processing_fee\", \"confidence\"], \"properties\": {\"lender\": {\"type\": \"string\"}, \"product_name\": {\"type\": \"string\"}, \"interest_rate_min\": {\"type\": [\"number\", \"null\"]}, \"interest_rate_max\": {\"type\": [\"number\", \"null\"]}, \"min_monthly_income\": {\"type\": [\"integer\", \"null\"]}, \"min_credit_score\": {\"type\": [\"integer\", \"null\"]}, \"max_credit_score\": {\"type\": [\"integer\", \"null\"]}, \"min_age\": {\"type\": [\"integer\", \"null\"]}, \"max_age\": {\"type\": [\"integer\", \"null\"]}, \"employment_types\": {\"type\": \"array\", \"items\": {\"type\": \"string\", \"enum\": [\"salaried\", \"self_employed\", \"business\"]}}, \"qualitative_criteria\": {\"type\": [\"string\", \"null\"]}, \"max_amount\": {\"type\": [\"integer\", \"null\"]}, \"max_tenure_months\": {\"type\": [\"integer\", \"null\"]}, \"processing_fee\": {\"type\": [\"string\", \"null\"]}, \"confidence\": {\"type\": \"number\"}}}}}};\n\nreturn {\n  json: {\n    ...$json,\n    request: {\n      model: $env.OPENAI_MODEL,\n      temperature: 0,\n      response_format: { type: 'json_schema', json_schema: { name: 'loan_products', strict: true, schema } },\n      messages: [\n        { role: 'system', content: prompt },\n        { role: 'user', content: `Source: ${$json.lender} (${$json.url})\\n\\n${$json.text}` },\n      ],\n    },\n  },\n};\n",
+        "mode": "runOnceForEachItem"
+      }
+    },
+    {
+      "id": "d498c670-f2de-584b-8abf-332650ec6d22",
+      "name": "Extract products (OpenAI)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1600,
+        60
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.request) }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "credentials": {
+        "openAiApi": {
+          "id": "loanEngineAi001",
+          "name": "Loan Engine OpenAI"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "c19d38bf-674b-5b17-a0ef-84ccea341085",
+      "name": "Validate products",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1840,
+        60
+      ],
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\n\nconst page = $('Build extraction request').item.json;\nconst EMPLOYMENT = ['salaried', 'self_employed', 'business'];\n\nconst inRange = (value, low, high) => (typeof value === 'number' && value >= low && value <= high ? value : null);\nconst text = (value) => (typeof value === 'string' && value.trim() ? value.trim() : null);\n\nlet extracted = [];\ntry {\n  extracted = JSON.parse($json.choices[0].message.content).products ?? [];\n} catch (error) {\n  extracted = [];\n}\n\nconst products = new Map();\nfor (const product of extracted) {\n  const lender = text(product.lender);\n  const productName = text(product.product_name);\n  if (!lender || !productName) continue;\n\n  const employment = (product.employment_types ?? []).filter((type) => EMPLOYMENT.includes(type));\n  const criteria = {\n    interest_rate_min: inRange(product.interest_rate_min, 5, 45),\n    interest_rate_max: inRange(product.interest_rate_max, 5, 45),\n    min_monthly_income: inRange(product.min_monthly_income, 5000, 500000),\n    min_credit_score: inRange(product.min_credit_score, 300, 900),\n    max_credit_score: inRange(product.max_credit_score, 300, 900),\n    min_age: inRange(product.min_age, 18, 80),\n    max_age: inRange(product.max_age, 18, 80),\n    employment_types: employment.length === 0 || employment.length === EMPLOYMENT.length ? null : employment,\n    qualitative_criteria: text(product.qualitative_criteria),\n  };\n\n  products.set(`${lender}|${productName}`.toLowerCase(), {\n    lender,\n    product_name: productName,\n    ...criteria,\n    max_amount: inRange(product.max_amount, 10000, 100000000),\n    max_tenure_months: inRange(product.max_tenure_months, 1, 120),\n    processing_fee: text(product.processing_fee),\n    extraction_confidence: inRange(product.confidence, 0, 1),\n    criteria_hash: crypto.createHash('sha256').update(JSON.stringify(criteria)).digest('hex'),\n  });\n}\n\nreturn {\n  json: {\n    source_id: page.source_id,\n    url: page.url,\n    content_hash: page.content_hash,\n    products: [...products.values()],\n  },\n};\n",
+        "mode": "runOnceForEachItem"
+      }
+    },
+    {
+      "id": "6fe5f2ce-c985-5460-af39-d547936561c8",
+      "name": "Save products",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        2080,
+        60
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "with incoming as (\n    select *\n    from jsonb_to_recordset($4::jsonb) as p (\n        lender text,\n        product_name text,\n        interest_rate_min numeric,\n        interest_rate_max numeric,\n        min_monthly_income integer,\n        min_credit_score smallint,\n        max_credit_score smallint,\n        min_age smallint,\n        max_age smallint,\n        employment_types text[],\n        qualitative_criteria text,\n        max_amount bigint,\n        max_tenure_months smallint,\n        processing_fee text,\n        extraction_confidence numeric,\n        criteria_hash text\n    )\n),\nupserted as (\n    insert into loan_products (\n        source_id, source_url, lender, product_name, interest_rate_min, interest_rate_max,\n        min_monthly_income, min_credit_score, max_credit_score, min_age, max_age, employment_types,\n        qualitative_criteria, max_amount, max_tenure_months, processing_fee, extraction_confidence, criteria_hash\n    )\n    select $1::int, $2, lender, product_name, interest_rate_min, interest_rate_max,\n           min_monthly_income, min_credit_score, max_credit_score, min_age, max_age, employment_types,\n           qualitative_criteria, max_amount, max_tenure_months, processing_fee, extraction_confidence, criteria_hash\n    from incoming\n    on conflict (source_id, lender, product_name) do update set\n        source_url = excluded.source_url,\n        interest_rate_min = excluded.interest_rate_min,\n        interest_rate_max = excluded.interest_rate_max,\n        min_monthly_income = excluded.min_monthly_income,\n        min_credit_score = excluded.min_credit_score,\n        max_credit_score = excluded.max_credit_score,\n        min_age = excluded.min_age,\n        max_age = excluded.max_age,\n        employment_types = excluded.employment_types,\n        qualitative_criteria = excluded.qualitative_criteria,\n        max_amount = excluded.max_amount,\n        max_tenure_months = excluded.max_tenure_months,\n        processing_fee = excluded.processing_fee,\n        extraction_confidence = excluded.extraction_confidence,\n        criteria_hash = excluded.criteria_hash,\n        version = loan_products.version\n                  + case when loan_products.criteria_hash = excluded.criteria_hash then 0 else 1 end,\n        is_active = true,\n        last_seen_at = now()\n    returning product_id\n),\nretired as (\n    update loan_products\n    set is_active = false\n    where source_id = $1::int\n      and is_active\n      and exists (select 1 from incoming)\n      and (lender, product_name) not in (select lender, product_name from incoming)\n    returning product_id\n)\ninsert into crawl_runs (source_id, http_status, content_hash, changed, products_found, status)\nselect $1::int,\n       200,\n       $3,\n       true,\n       (select count(*) from upserted),\n       case when exists (select 1 from incoming) then 'updated' else 'empty' end\nreturning source_id, status, products_found, (select count(*) from retired) as products_retired\n",
+        "options": {
+          "queryReplacement": "={{ [$json.source_id, $json.url, $json.content_hash, JSON.stringify($json.products)] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "loanEnginePg001",
+          "name": "Loan Engine Postgres"
+        }
+      }
+    },
+    {
+      "id": "de559e81-88c9-59af-b0cc-6dba6277d35b",
+      "name": "Log unchanged page",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1360,
+        280
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "insert into crawl_runs (source_id, http_status, content_hash, changed, status, error)\nvalues ($1::int, $2::int, $3, false, $4, $5)\nreturning source_id, status\n",
+        "options": {
+          "queryReplacement": "={{ [$json.source_id, 200, $json.content_hash, 'unchanged', null] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "loanEnginePg001",
+          "name": "Loan Engine Postgres"
+        }
+      }
+    },
+    {
+      "id": "fec3d927-d8b2-5a8c-9b48-add6d4dbcc73",
+      "name": "Log failed fetch",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        640,
+        420
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "insert into crawl_runs (source_id, http_status, content_hash, changed, status, error)\nvalues ($1::int, $2::int, $3, false, $4, $5)\nreturning source_id, status\n",
+        "options": {
+          "queryReplacement": "={{ [$('Loop over sources').item.json.source_id, null, null, 'failed', String($json.error?.message ?? $json.error ?? 'empty response').slice(0, 500)] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "loanEnginePg001",
+          "name": "Loan Engine Postgres"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every day at 06:00": {
+      "main": [
+        [
+          {
+            "node": "Load active sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run now": {
+      "main": [
+        [
+          {
+            "node": "Load active sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load active sources": {
+      "main": [
+        [
+          {
+            "node": "Loop over sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop over sources": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Fetch page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch page": {
+      "main": [
+        [
+          {
+            "node": "Fetched?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetched?": {
+      "main": [
+        [
+          {
+            "node": "Clean and fingerprint page",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log failed fetch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clean and fingerprint page": {
+      "main": [
+        [
+          {
+            "node": "Page changed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Page changed?": {
+      "main": [
+        [
+          {
+            "node": "Build extraction request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log unchanged page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build extraction request": {
+      "main": [
+        [
+          {
+            "node": "Extract products (OpenAI)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract products (OpenAI)": {
+      "main": [
+        [
+          {
+            "node": "Validate products",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate products": {
+      "main": [
+        [
+          {
+            "node": "Save products",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save products": {
+      "main": [
+        [
+          {
+            "node": "Loop over sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log unchanged page": {
+      "main": [
+        [
+          {
+            "node": "Loop over sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log failed fetch": {
+      "main": [
+        [
+          {
+            "node": "Loop over sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "all",
+    "timezone": "Asia/Kolkata",
+    "errorWorkflow": "LoanErrorsWfE001"
+  },
+  "pinData": {},
+  "tags": []
+}
