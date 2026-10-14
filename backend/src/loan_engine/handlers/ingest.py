@@ -1,3 +1,5 @@
+"""S3 ObjectCreated handler that ingests uploaded CSVs and triggers matching."""
+
 import codecs
 import logging
 import tempfile
@@ -18,6 +20,7 @@ ALREADY_INGESTED = ("ingested", "matching", "matched", "notifying", "done")
 
 
 def handler(event: dict, context: object) -> None:
+    """Process every uploaded object in the S3 event."""
     for record in event["Records"]:
         bucket = record["s3"]["bucket"]["name"]
         key = unquote_plus(record["s3"]["object"]["key"])
@@ -25,6 +28,7 @@ def handler(event: dict, context: object) -> None:
 
 
 def process_upload(bucket: str, key: str) -> None:
+    """Ingest one upload idempotently: S3 may deliver the same event more than once."""
     conn = shared_connection()
     batch_id = key.removeprefix("uploads/").removesuffix(".csv")
     batch = batches.get(conn, batch_id)

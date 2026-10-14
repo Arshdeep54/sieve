@@ -1,3 +1,5 @@
+"""Streaming CSV ingestion: validate rows, COPY them into a staging table, then upsert users."""
+
 import csv
 import io
 from collections.abc import Iterable, Iterator
@@ -44,11 +46,15 @@ on conflict (user_id) do update set
 
 
 class InvalidFileError(ValueError):
+    """The file as a whole is unusable, e.g. empty or missing required columns."""
+
     pass
 
 
 @dataclass
 class IngestResult:
+    """Row counts reported back to the batch record."""
+
     total_rows: int = 0
     valid_rows: int = 0
     users_upserted: int = 0

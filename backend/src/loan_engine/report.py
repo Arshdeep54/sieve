@@ -1,3 +1,5 @@
+"""Batch progress report served to the upload UI."""
+
 import pg8000.native
 
 from loan_engine import batches
@@ -27,6 +29,7 @@ group by stage
 
 
 def describe(conn: pg8000.native.Connection, batch_id: str) -> dict | None:
+    """Return the batch with its matching funnel, matches per product and email counts, or None."""
     batch = batches.get(conn, batch_id)
     if batch is None:
         return None

@@ -1,3 +1,5 @@
+"""Client for the n8n matching webhook."""
+
 import json
 import os
 import urllib.request
@@ -6,6 +8,7 @@ from loan_engine.signing import sign
 
 
 def trigger_matching(batch_id: str) -> None:
+    """Start workflow B for a batch with an HMAC-signed request."""
     body = json.dumps({"batch_id": batch_id}).encode()
     request = urllib.request.Request(
         os.environ["N8N_WEBHOOK_URL"],

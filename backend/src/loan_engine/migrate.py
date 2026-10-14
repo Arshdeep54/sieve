@@ -1,3 +1,5 @@
+"""Apply SQL migrations in filename order, once each, recording them in schema_migrations."""
+
 from pathlib import Path
 
 import pg8000.native
@@ -15,6 +17,7 @@ create table if not exists schema_migrations (
 
 
 def migrate(conn: pg8000.native.Connection, directory: Path = MIGRATIONS_DIR) -> list[str]:
+    """Apply pending migrations, each in its own transaction, and return the names applied."""
     conn.run(CREATE_MIGRATIONS_TABLE)
     applied = {row[0] for row in conn.run("select version from schema_migrations")}
     newly_applied = []

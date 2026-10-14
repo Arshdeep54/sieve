@@ -1,3 +1,5 @@
+"""Serves the static upload UI bundled into the Lambda package."""
+
 from pathlib import Path
 
 UI_DIR = Path(__file__).resolve().parents[1] / "ui"
@@ -9,6 +11,7 @@ FILES = {
 
 
 def handler(event: dict, context: object) -> dict:
+    """Return the requested UI file."""
     name, content_type = FILES[event["rawPath"]]
     return {
         "statusCode": 200,

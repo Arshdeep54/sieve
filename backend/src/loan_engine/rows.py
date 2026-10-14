@@ -1,3 +1,5 @@
+"""Validation and normalisation of a single users CSV row."""
+
 import re
 import uuid
 from dataclasses import dataclass
@@ -17,6 +19,8 @@ EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 @dataclass(frozen=True)
 class UserRow:
+    """A validated user, normalised for storage."""
+
     user_id: str
     name: str
     email: str
@@ -27,15 +31,19 @@ class UserRow:
 
 
 class RowError(ValueError):
+    """The row is invalid; the message is written to the rejected-rows file."""
+
     pass
 
 
 def missing_columns(header: list[str]) -> list[str]:
+    """Return the required columns absent from the header, matched case-insensitively."""
     present = {column.strip().lower() for column in header}
     return [column for column in REQUIRED_COLUMNS if column not in present]
 
 
 def parse_row(raw: dict[str, str]) -> UserRow:
+    """Validate one CSV record and return it normalised, or raise RowError."""
     values = {key.strip().lower(): (value or "").strip() for key, value in raw.items() if key}
     return UserRow(
         user_id=_uuid(values["user_id"]),

@@ -1,3 +1,5 @@
+"""Postgres connections for Lambdas and local scripts, configured from the environment."""
+
 import os
 import ssl
 
@@ -7,6 +9,7 @@ _connection: pg8000.native.Connection | None = None
 
 
 def connect() -> pg8000.native.Connection:
+    """Open a connection; with DB_SSL=true the server certificate is verified against DB_SSL_CA."""
     use_ssl = os.environ.get("DB_SSL") == "true"
     return pg8000.native.Connection(
         host=os.environ["DB_HOST"],

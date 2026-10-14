@@ -49,6 +49,8 @@ def _ingest_in_background(batch_id: str, csv_path: Path) -> None:
 
 
 class LocalApi(BaseHTTPRequestHandler):
+    """Routes for the UI, upload, status and rejected-rows download."""
+
     def do_GET(self) -> None:
         if self.path.startswith("/uploads/"):
             self._status(_batch_id(self.path, "/uploads/"))

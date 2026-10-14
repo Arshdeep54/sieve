@@ -38,6 +38,7 @@ EMPLOYMENT = ["Salaried", "Salaried", "Salaried", "Self-Employed", "Business"]
 
 
 def write_users(path: Path, count: int) -> None:
+    """Write count users with a fixed seed so load tests are repeatable."""
     rng = random.Random(7)
     with path.open("w", newline="") as handle:
         writer = csv.writer(handle)

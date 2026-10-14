@@ -1,3 +1,5 @@
+"""POST /uploads: register a batch and hand the browser a presigned S3 POST."""
+
 import os
 import uuid
 
@@ -15,6 +17,7 @@ s3 = boto3.client("s3", config=Config(signature_version="s3v4", s3={"addressing_
 
 
 def handler(event: dict, context: object) -> dict:
+    """Create the batch and return a presigned POST capped at MAX_UPLOAD_BYTES."""
     batch_id = str(uuid.uuid4())
     key = f"uploads/{batch_id}.csv"
     batches.create(shared_connection(), batch_id, key)

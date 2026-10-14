@@ -1,3 +1,5 @@
+"""API Gateway response helpers."""
+
 import json
 from datetime import datetime
 from decimal import Decimal
@@ -5,6 +7,7 @@ from uuid import UUID
 
 
 def json_response(status: int, body: dict) -> dict:
+    """Build an HTTP API response, serialising datetimes, UUIDs and decimals."""
     return {
         "statusCode": status,
         "headers": {"Content-Type": "application/json"},

@@ -12,6 +12,7 @@ from loan_engine.ingest import InvalidFileError, ingest_users
 
 
 def ingest_file(conn: pg8000.native.Connection, batch_id: str, csv_path: Path) -> None:
+    """Ingest a local CSV the way the ingest Lambda does, including duplicate detection."""
     with csv_path.open("rb") as raw:
         etag = hashlib.file_digest(raw, "md5").hexdigest()
     original_id = batches.find_live_duplicate(conn, batch_id, etag)
@@ -45,6 +46,7 @@ def ingest_file(conn: pg8000.native.Connection, batch_id: str, csv_path: Path) -
 
 
 def main(csv_path: Path) -> None:
+    """Register a batch for the file and ingest it."""
     conn = connect()
     batch_id = str(uuid.uuid4())
     batches.create(conn, batch_id, f"local/{csv_path.name}")

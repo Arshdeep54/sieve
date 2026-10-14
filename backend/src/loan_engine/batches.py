@@ -1,7 +1,10 @@
+"""Upload batch lifecycle: one row per upload, moved through pending, ingesting, ingested and onward."""
+
 import pg8000.native
 
 
 def create(conn: pg8000.native.Connection, batch_id: str, s3_key: str) -> None:
+    """Register a batch before the browser uploads, so the S3 event can find it."""
     conn.run(
         "insert into upload_batches (batch_id, s3_key) values (cast(:batch_id as uuid), :s3_key)",
         batch_id=batch_id,
@@ -10,6 +13,7 @@ def create(conn: pg8000.native.Connection, batch_id: str, s3_key: str) -> None:
 
 
 def get(conn: pg8000.native.Connection, batch_id: str) -> dict | None:
+    """Return the batch row as a dict, or None if it does not exist."""
     rows = conn.run(
         "select * from upload_batches where batch_id = cast(:batch_id as uuid)",
         batch_id=batch_id,
@@ -20,6 +24,7 @@ def get(conn: pg8000.native.Connection, batch_id: str) -> dict | None:
 
 
 def find_live_duplicate(conn: pg8000.native.Connection, batch_id: str, etag: str) -> str | None:
+    """Return an earlier batch with the same file ETag, ignoring failed, pending and duplicate ones."""
     rows = conn.run(
         """
         select batch_id from upload_batches
@@ -35,6 +40,7 @@ def find_live_duplicate(conn: pg8000.native.Connection, batch_id: str, etag: str
 
 
 def mark_duplicate(conn: pg8000.native.Connection, batch_id: str, original_id: str) -> None:
+    """Close a batch whose file was already ingested, pointing at the original."""
     conn.run(
         """
         update upload_batches
@@ -47,6 +53,7 @@ def mark_duplicate(conn: pg8000.native.Connection, batch_id: str, original_id: s
 
 
 def mark_ingesting(conn: pg8000.native.Connection, batch_id: str, etag: str | None) -> None:
+    """Record the file ETag and clear any previous error before ingestion starts."""
     conn.run(
         """
         update upload_batches
@@ -65,6 +72,7 @@ def mark_ingested(
     valid_rows: int,
     errors_key: str | None,
 ) -> None:
+    """Store row counts and the rejected-rows file key once ingestion succeeds."""
     conn.run(
         """
         update upload_batches
@@ -85,6 +93,7 @@ def mark_ingested(
 
 
 def mark_failed(conn: pg8000.native.Connection, batch_id: str, error: str) -> None:
+    """Mark the batch failed with a message the UI can show."""
     conn.run(
         """
         update upload_batches
