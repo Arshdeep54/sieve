@@ -2,6 +2,7 @@
 
 Upload a CSV of users, match every user to personal loans read live from lender websites, and email each user their best offers.
 
+- **Access**: staff sign in through a Cognito user pool; API Gateway rejects upload and status calls without a valid token.
 - **Ingestion**: the browser uploads straight to S3 with a presigned POST; an S3 event starts a streaming ingest Lambda.
 - **Discovery** (n8n workflow A): crawls lender pages daily and extracts structured products with an LLM.
 - **Matching** (n8n workflow B): a SQL hard filter, then LLM checks on qualitative criteria for groups of similar users, cached across batches.
@@ -12,6 +13,7 @@ Upload a CSV of users, match every user to personal loans read live from lender 
 
 ```mermaid
 flowchart LR
+    Browser -->|sign in, PKCE| Cognito[Cognito hosted login]
     Browser -->|GET / and app.js| UI[ui Lambda]
     Browser -->|POST /uploads| Create[createUpload Lambda]
     Create -->|batch row| RDS[(RDS Postgres)]
@@ -67,6 +69,7 @@ Ingesting 1M rows (100 MB) takes 54 s locally. The ingest Lambda has 15 minutes.
 - **Signed webhooks.** The ingest Lambda signs the payload with HMAC-SHA256. Workflow B verifies the raw body before doing any work.
 - **Crawler change detection.** Pages are cleaned and fingerprinted. An unchanged page skips the LLM, and a failed source keeps its last known products.
 - **Demo email limit.** Only the `DEMO_LIMIT` best-matched users are emailed; the rest are recorded as `suppressed`. Every address is rewritten to `GMAIL_BASE+<name>@gmail.com`, so no real user is emailed.
+- **Staff-only access.** Uploads spend OpenAI credits and send email, so every `/uploads` route has a Cognito JWT authorizer on API Gateway. Requests without a valid token never reach a Lambda. Accounts are created by an admin (self sign-up is off), and each batch records who uploaded it. The page uses the authorization code flow with PKCE, so no client secret ships to the browser. Running locally there is no sign-in: the local API binds to 127.0.0.1 only.
 - **No NAT gateway.** n8n is the only component that needs the internet, so it runs in the public subnet. Everything else stays private.
 
 ## Repository layout
@@ -121,7 +124,12 @@ Requirements:
    ```
    This builds the Lambda bundle and deploys the stack, runs the migrations, then ships `n8n/` to the EC2 host and starts it.
 4. Create an access key for the stack's SES user (output `SesSenderUser`) and add it to `.env.aws`. Then run `make params` and `make deploy` again.
-5. Open the UI at the `httpApi` URL printed by the deploy. To reach the n8n editor, run `make n8n-tunnel` and open http://localhost:5679. For psql, run `make db-tunnel`, which listens on `localhost:55433`.
+5. Invite staff. Cognito emails each person a temporary password:
+   ```sh
+   aws cognito-idp admin-create-user --user-pool-id <StaffPoolId output> \
+     --username person@company.com --user-attributes Name=email,Value=person@company.com Name=email_verified,Value=true
+   ```
+6. Open the UI at the `httpApi` URL printed by the deploy. To reach the n8n editor, run `make n8n-tunnel` and open http://localhost:5679. For psql, run `make db-tunnel`, which listens on `localhost:55433`.
 
 Secrets never reach git or the CloudFormation template:
 - RDS reads its password through an `ssm-secure` dynamic reference.

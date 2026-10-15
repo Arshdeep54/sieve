@@ -12,6 +12,13 @@ provider:
   logRetentionInDays: 14
   httpApi:
     payload: "2.0"
+    authorizers:
+      staff:
+        type: jwt
+        identitySource: $request.header.Authorization
+        issuerUrl: !Sub https://cognito-idp.${AWS::Region}.amazonaws.com/${StaffPool}
+        audience:
+          - !Ref StaffPoolClient
   iam:
     role:
       statements:
@@ -48,24 +55,41 @@ functions:
   ui:
     handler: loan_engine.handlers.ui.handler
     memorySize: 256
+    environment:
+      AUTH_DOMAIN: !Sub https://${StaffPoolDomain}.auth.${AWS::Region}.amazoncognito.com
+      AUTH_CLIENT_ID: !Ref StaffPoolClient
     events:
       - httpApi: GET /
       - httpApi: GET /app.js
       - httpApi: GET /styles.css
+      - httpApi: GET /config.json
 
   createUpload:
     handler: loan_engine.handlers.create_upload.handler
     vpc: ${self:custom.vpc}
     environment: ${self:custom.environment}
     events:
-      - httpApi: POST /uploads
+      - httpApi:
+          method: POST
+          path: /uploads
+          authorizer:
+            name: staff
 
   status:
     handler: loan_engine.handlers.status.handler
     vpc: ${self:custom.vpc}
     environment: ${self:custom.environment}
     events:
-      - httpApi: GET /uploads/{batch_id}
+      - httpApi:
+          method: GET
+          path: /uploads
+          authorizer:
+            name: staff
+      - httpApi:
+          method: GET
+          path: /uploads/{batch_id}
+          authorizer:
+            name: staff
 
   ingest:
     handler: loan_engine.handlers.ingest.handler
@@ -379,6 +403,69 @@ resources:
                     - !Sub arn:aws:ses:${AWS::Region}:${AWS::AccountId}:identity/*
                     - !Sub arn:aws:ses:${AWS::Region}:${AWS::AccountId}:configuration-set/*
 
+    StaffPool:
+      Type: AWS::Cognito::UserPool
+      DeletionPolicy: Retain
+      Properties:
+        UserPoolName: loan-engine-${sls:stage}-staff
+        UserPoolTier: ESSENTIALS
+        DeletionProtection: ACTIVE
+        UsernameAttributes: [email]
+        AutoVerifiedAttributes: [email]
+        AdminCreateUserConfig:
+          AllowAdminCreateUserOnly: true
+        AccountRecoverySetting:
+          RecoveryMechanisms:
+            - Name: verified_email
+              Priority: 1
+        Policies:
+          PasswordPolicy:
+            MinimumLength: 12
+            RequireUppercase: true
+            RequireLowercase: true
+            RequireNumbers: true
+            RequireSymbols: false
+            TemporaryPasswordValidityDays: 7
+
+    StaffPoolClient:
+      Type: AWS::Cognito::UserPoolClient
+      Properties:
+        UserPoolId: !Ref StaffPool
+        ClientName: loan-engine-ui
+        GenerateSecret: false
+        ExplicitAuthFlows: [ALLOW_USER_SRP_AUTH, ALLOW_REFRESH_TOKEN_AUTH]
+        AllowedOAuthFlowsUserPoolClient: true
+        AllowedOAuthFlows: [code]
+        AllowedOAuthScopes: [openid, email]
+        SupportedIdentityProviders: [COGNITO]
+        CallbackURLs:
+          - !Sub https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/
+        LogoutURLs:
+          - !Sub https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/
+        PreventUserExistenceErrors: ENABLED
+        IdTokenValidity: 60
+        AccessTokenValidity: 60
+        RefreshTokenValidity: 1
+        TokenValidityUnits:
+          IdToken: minutes
+          AccessToken: minutes
+          RefreshToken: days
+
+    StaffPoolDomain:
+      Type: AWS::Cognito::UserPoolDomain
+      Properties:
+        UserPoolId: !Ref StaffPool
+        Domain: loan-engine-${sls:stage}-${aws:accountId}
+        ManagedLoginVersion: 2
+
+    StaffLoginBranding:
+      Type: AWS::Cognito::ManagedLoginBranding
+      DependsOn: StaffPoolDomain
+      Properties:
+        UserPoolId: !Ref StaffPool
+        ClientId: !Ref StaffPoolClient
+        UseCognitoProvidedValues: true
+
   Outputs:
     UploadBucketName:
       Value: ${self:custom.bucket}
@@ -388,3 +475,5 @@ resources:
       Value: !GetAtt Database.Endpoint.Address
     SesSenderUser:
       Value: !Ref SesSender
+    StaffPoolId:
+      Value: !Ref StaffPool

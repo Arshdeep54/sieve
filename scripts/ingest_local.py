@@ -49,7 +49,7 @@ def main(csv_path: Path) -> None:
     """Register a batch for the file and ingest it."""
     conn = connect()
     batch_id = str(uuid.uuid4())
-    batches.create(conn, batch_id, f"local/{csv_path.name}")
+    batches.create(conn, batch_id, f"local/{csv_path.name}", csv_path.name)
     ingest_file(conn, batch_id, csv_path)
 
 

@@ -1,5 +1,6 @@
 """POST /uploads: register a batch and hand the browser a presigned S3 POST."""
 
+import json
 import os
 import uuid
 
@@ -20,7 +21,8 @@ def handler(event: dict, context: object) -> dict:
     """Create the batch and return a presigned POST capped at MAX_UPLOAD_BYTES."""
     batch_id = str(uuid.uuid4())
     key = f"uploads/{batch_id}.csv"
-    batches.create(shared_connection(), batch_id, key)
+    claims = event["requestContext"]["authorizer"]["jwt"]["claims"]
+    batches.create(shared_connection(), batch_id, key, _file_name(event), claims["email"])
     upload = s3.generate_presigned_post(
         Bucket=os.environ["UPLOAD_BUCKET"],
         Key=key,
@@ -28,3 +30,13 @@ def handler(event: dict, context: object) -> dict:
         ExpiresIn=UPLOAD_URL_TTL_SECONDS,
     )
     return json_response(201, {"batch_id": batch_id, "upload": upload, "max_bytes": MAX_UPLOAD_BYTES})
+
+
+def _file_name(event: dict) -> str | None:
+    try:
+        name = json.loads(event.get("body") or "{}").get("file_name")
+    except (ValueError, AttributeError):
+        return None
+    if not isinstance(name, str):
+        return None
+    return name.strip()[:200] or None

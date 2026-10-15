@@ -3,13 +3,38 @@
 import pg8000.native
 
 
-def create(conn: pg8000.native.Connection, batch_id: str, s3_key: str) -> None:
+def create(
+    conn: pg8000.native.Connection,
+    batch_id: str,
+    s3_key: str,
+    file_name: str | None = None,
+    uploaded_by: str | None = None,
+) -> None:
     """Register a batch before the browser uploads, so the S3 event can find it."""
     conn.run(
-        "insert into upload_batches (batch_id, s3_key) values (cast(:batch_id as uuid), :s3_key)",
+        """
+        insert into upload_batches (batch_id, s3_key, file_name, uploaded_by)
+        values (cast(:batch_id as uuid), :s3_key, :file_name, :uploaded_by)
+        """,
         batch_id=batch_id,
         s3_key=s3_key,
+        file_name=file_name,
+        uploaded_by=uploaded_by,
     )
+
+
+def recent(conn: pg8000.native.Connection, limit: int = 20) -> list[dict]:
+    """Return the latest batches, newest first, for the uploads list."""
+    rows = conn.run(
+        """
+        select batch_id, file_name, uploaded_by, status, valid_rows, created_at
+        from upload_batches
+        order by created_at desc
+        limit :limit
+        """,
+        limit=limit,
+    )
+    return [dict(zip((column["name"] for column in conn.columns), row, strict=True)) for row in rows]
 
 
 def get(conn: pg8000.native.Connection, batch_id: str) -> dict | None:

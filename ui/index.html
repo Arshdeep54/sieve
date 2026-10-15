@@ -14,21 +14,27 @@
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <header class="masthead">
-      <a class="brand" href="./">
-        <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M4 5h16l-6 7v6l-4 2v-8z" />
-        </svg>
-        Loan Match
-      </a>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <a class="brand" href="./">
+          <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 5h16l-6 7v6l-4 2v-8z" />
+          </svg>
+          Loan Match
+        </a>
+        <div class="account" id="account" hidden>
+          <span class="account-email" id="account-email"></span>
+          <button class="button button-quiet" type="button" id="sign-out">Sign out</button>
+        </div>
+      </div>
     </header>
 
-    <main class="page">
+    <main class="page" id="page">
       <section class="intro" aria-labelledby="intro-title">
-        <h1 id="intro-title">Match a user file against live loan offers</h1>
+        <h1 id="intro-title">Upload users</h1>
         <p class="lede">
-          Drop a CSV of users. Every row is validated, each user is checked against personal loans read from lender
-          sites, and the best fits go out by email.
+          Each row is validated, every user is checked against personal loans read from lender sites, and the
+          best-matched users are emailed their offers.
         </p>
       </section>
 
@@ -119,6 +125,24 @@
         </div>
 
         <button class="button" type="button" id="upload-another" hidden>Upload another file</button>
+      </section>
+
+      <section class="history" id="history" aria-labelledby="history-title" hidden>
+        <h2 id="history-title">Recent uploads</h2>
+        <div class="table-scroll">
+          <table class="uploads">
+            <thead>
+              <tr>
+                <th scope="col">File</th>
+                <th scope="col">Uploaded by</th>
+                <th scope="col">Status</th>
+                <th scope="col" class="num">Users</th>
+                <th scope="col" class="num">Started</th>
+              </tr>
+            </thead>
+            <tbody id="uploads-body"></tbody>
+          </table>
+        </div>
       </section>
     </main>
 

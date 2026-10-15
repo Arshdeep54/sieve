@@ -1,5 +1,9 @@
-"""Serve the UI and upload API locally, standing in for API Gateway, S3 and the Lambdas."""
+"""Serve the UI and upload API locally, standing in for API Gateway, S3 and the Lambdas.
 
+There is no sign-in locally: the server binds to 127.0.0.1 and uploads are recorded without an uploader.
+"""
+
+import json
 import threading
 import uuid
 from email import message_from_bytes
@@ -52,7 +56,14 @@ class LocalApi(BaseHTTPRequestHandler):
     """Routes for the UI, upload, status and rejected-rows download."""
 
     def do_GET(self) -> None:
-        if self.path.startswith("/uploads/"):
+        if self.path == "/config.json":
+            self._json(HTTPStatus.OK, {"auth": None})
+        elif self.path == "/uploads":
+            conn = connect()
+            uploads = batches.recent(conn)
+            conn.close()
+            self._json(HTTPStatus.OK, {"uploads": uploads})
+        elif self.path.startswith("/uploads/"):
             self._status(_batch_id(self.path, "/uploads/"))
         elif self.path.startswith("/errors/"):
             self._errors_file(_batch_id(self.path, "/errors/"))
@@ -71,9 +82,19 @@ class LocalApi(BaseHTTPRequestHandler):
             self._json(HTTPStatus.NOT_FOUND, {"error": "Not found."})
 
     def _create_upload(self) -> None:
+        length = int(self.headers.get("Content-Length", 0))
+        try:
+            file_name = json.loads(self.rfile.read(length) or b"{}").get("file_name")
+        except (ValueError, AttributeError):
+            file_name = None
         batch_id = str(uuid.uuid4())
         conn = connect()
-        batches.create(conn, batch_id, f"uploads/{batch_id}.csv")
+        batches.create(
+            conn,
+            batch_id,
+            f"uploads/{batch_id}.csv",
+            file_name if isinstance(file_name, str) else None,
+        )
         conn.close()
         upload = {"url": f"/local-upload/{batch_id}", "fields": {}}
         self._json(

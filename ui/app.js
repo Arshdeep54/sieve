@@ -4,10 +4,22 @@ const POLL_MS = 2000;
 const FINAL_STATUSES = new Set(['done', 'failed', 'duplicate']);
 const STEPS = ['upload', 'ingest', 'match', 'notify'];
 const ACTIVE_STEP = { pending: 0, ingesting: 1, ingested: 2, matching: 2, matched: 3, notifying: 3, done: 4 };
+const STATUS_LABELS = {
+  pending: 'Waiting for file',
+  ingesting: 'Validating',
+  ingested: 'Stored',
+  matching: 'Matching',
+  matched: 'Matched',
+  notifying: 'Emailing',
+  done: 'Done',
+  duplicate: 'Duplicate',
+  failed: 'Failed',
+};
 
 const byId = (id) => document.getElementById(id);
 const count = new Intl.NumberFormat('en-IN');
 const clock = new Intl.DateTimeFormat('en-IN', { hour: 'numeric', minute: '2-digit' });
+const when = new Intl.DateTimeFormat('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
 
 const view = {
   dropzone: byId('dropzone'),
@@ -29,7 +41,14 @@ const view = {
   productsBody: byId('products-body'),
   emailsSection: byId('emails-section'),
   uploadAnother: byId('upload-another'),
+  account: byId('account'),
+  accountEmail: byId('account-email'),
+  signOut: byId('sign-out'),
+  history: byId('history'),
+  uploadsBody: byId('uploads-body'),
 };
+
+const session = { auth: null, idToken: null };
 
 let trackedBatch = null;
 let pollTimer = null;
@@ -71,8 +90,86 @@ async function checkFile(file) {
   return null;
 }
 
-async function requestJson(method, path) {
-  const response = await fetch(path, { method, headers: { Accept: 'application/json' } });
+function base64Url(bytes) {
+  return btoa(String.fromCharCode(...new Uint8Array(bytes)))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+}
+
+function tokenClaims(token) {
+  const payload = atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'));
+  return JSON.parse(new TextDecoder().decode(Uint8Array.from(payload, (char) => char.charCodeAt(0))));
+}
+
+function redirectUri() {
+  return `${location.origin}${location.pathname}`;
+}
+
+async function signIn() {
+  const verifier = base64Url(crypto.getRandomValues(new Uint8Array(32)));
+  const state = base64Url(crypto.getRandomValues(new Uint8Array(16)));
+  sessionStorage.setItem('signIn', JSON.stringify({ verifier, state, hash: location.hash }));
+  const challenge = base64Url(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)));
+  const params = new URLSearchParams({
+    response_type: 'code',
+    client_id: session.auth.client_id,
+    redirect_uri: redirectUri(),
+    scope: 'openid email',
+    state,
+    code_challenge: challenge,
+    code_challenge_method: 'S256',
+  });
+  location.assign(`${session.auth.domain}/oauth2/authorize?${params}`);
+  return new Promise(() => {});
+}
+
+async function finishSignIn(params) {
+  const pending = JSON.parse(sessionStorage.getItem('signIn') ?? 'null');
+  sessionStorage.removeItem('signIn');
+  history.replaceState(null, '', `${location.pathname}${pending?.hash ?? ''}`);
+  if (!pending || pending.state !== params.get('state')) throw new Error('Sign-in could not be verified. Reload the page to try again.');
+  const response = await fetch(`${session.auth.domain}/oauth2/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'authorization_code',
+      client_id: session.auth.client_id,
+      code: params.get('code'),
+      redirect_uri: redirectUri(),
+      code_verifier: pending.verifier,
+    }),
+  });
+  if (!response.ok) throw new Error('Sign-in failed. Reload the page to try again.');
+  sessionStorage.setItem('idToken', (await response.json()).id_token);
+}
+
+async function startSession() {
+  session.auth = (await (await fetch('config.json')).json()).auth;
+  if (!session.auth) return null;
+  const params = new URLSearchParams(location.search);
+  if (params.has('code')) await finishSignIn(params);
+  const token = sessionStorage.getItem('idToken');
+  if (!token || tokenClaims(token).exp * 1000 < Date.now() + 60_000) return signIn();
+  session.idToken = token;
+  return tokenClaims(token).email;
+}
+
+function signOut() {
+  sessionStorage.removeItem('idToken');
+  const params = new URLSearchParams({ client_id: session.auth.client_id, logout_uri: redirectUri() });
+  location.assign(`${session.auth.domain}/logout?${params}`);
+}
+
+async function requestJson(method, path, payload) {
+  const headers = { Accept: 'application/json' };
+  if (session.idToken) headers.Authorization = `Bearer ${session.idToken}`;
+  if (payload) headers['Content-Type'] = 'application/json';
+  const response = await fetch(path, { method, headers, body: payload ? JSON.stringify(payload) : undefined });
+  if (response.status === 401 && session.auth) {
+    sessionStorage.removeItem('idToken');
+    return signIn();
+  }
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw Object.assign(new Error(body.error ?? `Request failed (${response.status}).`), { status: response.status });
   return body;
@@ -105,10 +202,11 @@ async function handleFile(file) {
   }
   setDropzone('uploading', `Uploading ${file.name}`);
   try {
-    const created = await requestJson('POST', 'uploads');
+    const created = await requestJson('POST', 'uploads', { file_name: file.name });
     await sendToStorage(created.upload, file);
     setDropzone('idle');
     track(created.batch_id);
+    loadHistory();
   } catch (error) {
     setDropzone('idle');
     showUploadError(error.message);
@@ -131,7 +229,8 @@ async function poll(batchId) {
     const report = await requestJson('GET', `uploads/${batchId}`);
     if (batchId !== trackedBatch) return;
     render(report);
-    if (!FINAL_STATUSES.has(report.batch.status)) pollTimer = setTimeout(() => poll(batchId), POLL_MS);
+    if (FINAL_STATUSES.has(report.batch.status)) loadHistory();
+    else pollTimer = setTimeout(() => poll(batchId), POLL_MS);
   } catch (error) {
     if (batchId !== trackedBatch) return;
     if (error.status === 404) {
@@ -265,8 +364,9 @@ function renderResults(report) {
 }
 
 function renderHeader(batch) {
-  view.batchTitle.textContent = `Upload ${batch.batch_id.slice(0, 8)}`;
-  view.batchMeta.textContent = `Started at ${clock.format(new Date(batch.created_at))}`;
+  view.batchTitle.textContent = batch.file_name ?? `Upload ${batch.batch_id.slice(0, 8)}`;
+  const by = batch.uploaded_by ? ` by ${batch.uploaded_by}` : '';
+  view.batchMeta.textContent = `Started at ${clock.format(new Date(batch.created_at))}${by}`;
   view.notice.hidden = true;
   if (batch.status === 'duplicate') {
     showNotice('This exact file was uploaded before, so it was not processed again.', '', {
@@ -285,6 +385,40 @@ function render(report) {
   renderFunnel(report);
   renderResults(report);
   view.uploadAnother.hidden = !FINAL_STATUSES.has(report.batch.status);
+}
+
+function renderHistory(uploads) {
+  view.history.hidden = uploads.length === 0;
+  view.uploadsBody.replaceChildren(
+    ...uploads.map((upload) => {
+      const row = element('tr');
+      if (upload.batch_id === trackedBatch) row.setAttribute('aria-current', 'true');
+      const link = element('a', null, upload.file_name ?? `Upload ${upload.batch_id.slice(0, 8)}`);
+      link.href = `#batch=${upload.batch_id}`;
+      const file = element('td');
+      file.append(link);
+      const pill = element('span', 'status-pill', STATUS_LABELS[upload.status] ?? upload.status);
+      if (['done', 'failed'].includes(upload.status)) pill.dataset.tone = upload.status;
+      const status = element('td');
+      status.append(pill);
+      row.append(
+        file,
+        element('td', 'uploads-by', upload.uploaded_by ?? '—'),
+        status,
+        element('td', 'num', upload.valid_rows === null ? '—' : count.format(upload.valid_rows)),
+        element('td', 'num', when.format(new Date(upload.created_at))),
+      );
+      return row;
+    }),
+  );
+}
+
+async function loadHistory() {
+  try {
+    renderHistory((await requestJson('GET', 'uploads')).uploads);
+  } catch {
+    view.history.hidden = view.uploadsBody.children.length === 0;
+  }
 }
 
 function batchFromHash() {
@@ -326,8 +460,30 @@ view.uploadAnother.addEventListener('click', () => {
 
 window.addEventListener('hashchange', () => {
   const batchId = batchFromHash();
-  if (batchId && batchId !== trackedBatch) track(batchId);
+  if (batchId && batchId !== trackedBatch) {
+    track(batchId);
+    loadHistory();
+  }
 });
 
-const initialBatch = batchFromHash();
-if (initialBatch) track(initialBatch);
+view.signOut.addEventListener('click', signOut);
+
+async function boot() {
+  try {
+    const email = await startSession();
+    if (email) {
+      view.accountEmail.textContent = email;
+      view.account.hidden = false;
+    }
+  } catch (error) {
+    document.body.dataset.ready = '';
+    showUploadError(error.message);
+    return;
+  }
+  document.body.dataset.ready = '';
+  const initialBatch = batchFromHash();
+  if (initialBatch) track(initialBatch);
+  loadHistory();
+}
+
+boot();
