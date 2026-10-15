@@ -14,8 +14,9 @@ Upload a CSV of users, match every user to personal loans read live from lender 
 ```mermaid
 flowchart LR
     Browser -->|sign in, PKCE| Cognito[Cognito hosted login]
-    Browser -->|GET / and app.js| UI[ui Lambda]
-    Browser -->|POST /uploads| Create[createUpload Lambda]
+    Browser --> CDN[CloudFront]
+    CDN -->|page, app.js, config.json| Site[(S3 site bucket)]
+    CDN -->|/uploads*| Create[createUpload Lambda]
     Create -->|batch row| RDS[(RDS Postgres)]
     Create -->|presigned POST| Browser
     Browser -->|CSV, up to 200 MB| S3[(S3 uploads/)]
@@ -24,7 +25,7 @@ flowchart LR
     Ingest -->|rejected rows| S3
     Ingest -.->|failures after 2 retries| DLQ[SQS DLQ]
     Ingest -->|HMAC signed webhook| B
-    Browser -->|GET /uploads/id| Status[status Lambda]
+    CDN -->|GET /uploads/id| Status[status Lambda]
     Status --> RDS
 
     subgraph EC2 [n8n on EC2]
@@ -40,7 +41,7 @@ flowchart LR
     C -->|n8n AWS SES node| SES
 ```
 
-All Lambdas except `ui` run in private subnets with no NAT. They reach S3 through a gateway endpoint, and n8n through its private IP. The n8n host has no inbound public ports: its webhook accepts traffic from the Lambda security group only, and the editor opens over an SSM port forward.
+The page is static files in a private S3 bucket behind CloudFront, so loading it never waits on a Lambda. CloudFront forwards `/uploads*` to API Gateway on the same origin, so there is no CORS between the page and the API. All Lambdas run in private subnets with no NAT. They reach S3 through a gateway endpoint, and n8n through its private IP. The n8n host has no inbound public ports: its webhook accepts traffic from the Lambda security group only, and the editor opens over an SSM port forward.
 
 ## The matching funnel
 
@@ -80,7 +81,7 @@ backend/tests/             unit tests, including golden tests for workflow B's S
 db/migrations/             schema and crawl sources, applied in order
 n8n/workflows/             workflows A, B, C and E, imported on n8n start
 n8n/bootstrap.sh           imports credentials from env, imports and publishes workflows
-ui/                        upload and tracking page, served by the ui Lambda
+ui/                        upload and tracking page, served from S3 through CloudFront
 infra/n8n-host.sh          starts n8n on the EC2 host, secrets from SSM
 scripts/                   local API, local ingest, deploy, tunnels, load generator
 serverless.yml             Lambdas, HTTP API, VPC, RDS, S3, EC2, IAM
@@ -129,8 +130,8 @@ Requirements:
    aws cognito-idp admin-create-user --user-pool-id <StaffPoolId output> \
      --username person@company.com --user-attributes Name=email,Value=person@company.com Name=email_verified,Value=true
    ```
-6. Optional custom domain: request an ACM certificate for the name in the same region, validate it through DNS, then set `domain` and `certificateArn` for the stage under `params` in `serverless.yml` and deploy again. The stack adds the domain to API Gateway, the Cognito callback URLs and the S3 CORS origins. Finally, point a CNAME for the name at the `ApiDomainTarget` output.
-7. Open the UI at the `httpApi` URL printed by the deploy. To reach the n8n editor, run `make n8n-tunnel` and open http://localhost:5679. For psql, run `make db-tunnel`, which listens on `localhost:55433`.
+6. Optional custom domain: request an ACM certificate for the name in `us-east-1` (CloudFront only reads certificates from there), validate it through DNS, then set `domain` and `certificateArn` for the stage under `params` in `serverless.yml` and deploy again. The stack adds the domain to CloudFront, the Cognito callback URLs and the S3 CORS origins. Finally, point a CNAME for the name at the `SiteDomainName` output.
+7. Open the UI at the CloudFront URL printed by the deploy. To reach the n8n editor, run `make n8n-tunnel` and open http://localhost:5679. For psql, run `make db-tunnel`, which listens on `localhost:55433`.
 
 Secrets never reach git or the CloudFormation template:
 - RDS reads its password through an `ssm-secure` dynamic reference.

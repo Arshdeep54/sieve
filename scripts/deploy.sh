@@ -16,6 +16,14 @@ npx serverless@4 invoke --function migrate --stage "$stage" --region "$region"
 bucket=$(output UploadBucketName)
 instance=$(output N8nInstanceId)
 
+site=$(output SiteBucketName)
+echo "Publishing the UI to s3://$site/"
+mkdir -p .build
+printf '{"auth": {"domain": "%s", "client_id": "%s"}}\n' "$(output AuthDomain)" "$(output AuthClientId)" > .build/config.json
+aws s3 sync --delete --cache-control no-cache --exclude config.json ui "s3://$site/"
+aws s3 cp --cache-control no-cache .build/config.json "s3://$site/config.json"
+aws cloudfront create-invalidation --distribution-id "$(output SiteDistributionId)" --paths '/*' >/dev/null
+
 echo "Shipping n8n to s3://$bucket/deploy/"
 aws s3 sync --delete --exclude '.env*' n8n "s3://$bucket/deploy/n8n/"
 aws s3 cp docker-compose.yml "s3://$bucket/deploy/docker-compose.yml"
@@ -48,4 +56,4 @@ while :; do
   esac
 done
 
-echo "Deployed. Open the UI at the httpApi endpoint above; reach n8n with: make n8n-tunnel STAGE=$stage"
+echo "Deployed. Open the UI at https://$(output SiteDomainName); reach n8n with: make n8n-tunnel STAGE=$stage"

@@ -7,7 +7,7 @@ params:
     certificateArn: none
   prod:
     domain: sieve.hiesenbug.dev
-    certificateArn: arn:aws:acm:ap-south-1:546702454248:certificate/589b70bb-62ce-4748-9bd2-a5e3e1d6d802
+    certificateArn: arn:aws:acm:us-east-1:546702454248:certificate/e1e681dc-9c4b-4a57-94a5-ba724686b19d
 
 provider:
   name: aws
@@ -60,18 +60,6 @@ package:
   artifact: .build/lambda.zip
 
 functions:
-  ui:
-    handler: loan_engine.handlers.ui.handler
-    memorySize: 256
-    environment:
-      AUTH_DOMAIN: !Sub https://${StaffPoolDomain}.auth.${AWS::Region}.amazoncognito.com
-      AUTH_CLIENT_ID: !Ref StaffPoolClient
-    events:
-      - httpApi: GET /
-      - httpApi: GET /app.js
-      - httpApi: GET /styles.css
-      - httpApi: GET /config.json
-
   createUpload:
     handler: loan_engine.handlers.create_upload.handler
     vpc: ${self:custom.vpc}
@@ -289,7 +277,7 @@ resources:
           CorsRules:
             - AllowedMethods: [POST]
               AllowedOrigins:
-                - !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+                - !Sub https://${Site.DomainName}
                 - !If [HasDomain, "https://${param:domain}", !Ref AWS::NoValue]
               AllowedHeaders: ["*"]
               MaxAge: 3600
@@ -449,10 +437,10 @@ resources:
         AllowedOAuthScopes: [openid, email]
         SupportedIdentityProviders: [COGNITO]
         CallbackURLs:
-          - !Sub https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/
+          - !Sub https://${Site.DomainName}/
           - !If [HasDomain, "https://${param:domain}/", !Ref AWS::NoValue]
         LogoutURLs:
-          - !Sub https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/
+          - !Sub https://${Site.DomainName}/
           - !If [HasDomain, "https://${param:domain}/", !Ref AWS::NoValue]
         PreventUserExistenceErrors: ENABLED
         IdTokenValidity: 60
@@ -478,24 +466,102 @@ resources:
         ClientId: !Ref StaffPoolClient
         UseCognitoProvidedValues: true
 
-    ApiDomain:
-      Type: AWS::ApiGatewayV2::DomainName
-      Condition: HasDomain
+    SiteBucket:
+      Type: AWS::S3::Bucket
       Properties:
-        DomainName: ${param:domain}
-        DomainNameConfigurations:
-          - CertificateArn: ${param:certificateArn}
-            EndpointType: REGIONAL
-            SecurityPolicy: TLS_1_2
+        BucketName: loan-engine-${sls:stage}-site-${aws:accountId}-${aws:region}
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: true
+          BlockPublicPolicy: true
+          IgnorePublicAcls: true
+          RestrictPublicBuckets: true
+        BucketEncryption:
+          ServerSideEncryptionConfiguration:
+            - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
 
-    ApiDomainMapping:
-      Type: AWS::ApiGatewayV2::ApiMapping
-      Condition: HasDomain
-      DependsOn: [ApiDomain, HttpApiStage]
+    SiteBucketPolicy:
+      Type: AWS::S3::BucketPolicy
       Properties:
-        DomainName: ${param:domain}
-        ApiId: !Ref HttpApi
-        Stage: $default
+        Bucket: !Ref SiteBucket
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal: { Service: cloudfront.amazonaws.com }
+              Action: s3:GetObject
+              Resource: !Sub ${SiteBucket.Arn}/*
+              Condition:
+                StringEquals:
+                  AWS:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${Site}
+
+    SiteOriginAccess:
+      Type: AWS::CloudFront::OriginAccessControl
+      Properties:
+        OriginAccessControlConfig:
+          Name: loan-engine-${sls:stage}-site
+          OriginAccessControlOriginType: s3
+          SigningBehavior: always
+          SigningProtocol: sigv4
+
+    ApiCachePolicy:
+      Type: AWS::CloudFront::CachePolicy
+      Properties:
+        CachePolicyConfig:
+          Name: loan-engine-${sls:stage}-api
+          Comment: Never caches; keys on Authorization so CloudFront forwards it to API Gateway
+          MinTTL: 0
+          DefaultTTL: 0
+          MaxTTL: 1
+          ParametersInCacheKeyAndForwardedToOrigin:
+            EnableAcceptEncodingGzip: false
+            EnableAcceptEncodingBrotli: false
+            HeadersConfig:
+              HeaderBehavior: whitelist
+              Headers: [Authorization]
+            CookiesConfig:
+              CookieBehavior: none
+            QueryStringsConfig:
+              QueryStringBehavior: all
+
+    Site:
+      Type: AWS::CloudFront::Distribution
+      Properties:
+        DistributionConfig:
+          Enabled: true
+          Comment: loan-engine-${sls:stage} UI and API
+          HttpVersion: http2and3
+          PriceClass: PriceClass_200
+          DefaultRootObject: index.html
+          Aliases: !If [HasDomain, ["${param:domain}"], !Ref AWS::NoValue]
+          ViewerCertificate: !If
+            - HasDomain
+            - AcmCertificateArn: ${param:certificateArn}
+              SslSupportMethod: sni-only
+              MinimumProtocolVersion: TLSv1.2_2021
+            - CloudFrontDefaultCertificate: true
+          Origins:
+            - Id: site
+              DomainName: !GetAtt SiteBucket.RegionalDomainName
+              OriginAccessControlId: !GetAtt SiteOriginAccess.Id
+              S3OriginConfig:
+                OriginAccessIdentity: ""
+            - Id: api
+              DomainName: !Sub ${HttpApi}.execute-api.${AWS::Region}.amazonaws.com
+              CustomOriginConfig:
+                OriginProtocolPolicy: https-only
+                OriginSSLProtocols: [TLSv1.2]
+          DefaultCacheBehavior:
+            TargetOriginId: site
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          CacheBehaviors:
+            - PathPattern: /uploads*
+              TargetOriginId: api
+              ViewerProtocolPolicy: https-only
+              AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+              CachePolicyId: !Ref ApiCachePolicy
+              OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
 
   Conditions:
     HasDomain: !Not [!Equals ["${param:domain}", none]]
@@ -511,6 +577,13 @@ resources:
       Value: !Ref SesSender
     StaffPoolId:
       Value: !Ref StaffPool
-    ApiDomainTarget:
-      Condition: HasDomain
-      Value: !GetAtt ApiDomain.RegionalDomainName
+    SiteBucketName:
+      Value: !Ref SiteBucket
+    SiteDistributionId:
+      Value: !Ref Site
+    SiteDomainName:
+      Value: !GetAtt Site.DomainName
+    AuthDomain:
+      Value: !Sub https://${StaffPoolDomain}.auth.${AWS::Region}.amazoncognito.com
+    AuthClientId:
+      Value: !Ref StaffPoolClient

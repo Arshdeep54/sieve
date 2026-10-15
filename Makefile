@@ -45,7 +45,6 @@ build:
 	uv pip install -q --target .build/lambda --python-platform x86_64-manylinux2014 --python-version 3.12 -r .build/requirements.txt
 	cp -r backend/src/loan_engine .build/lambda/
 	cp -r db/migrations .build/lambda/loan_engine/migrations
-	cp -r ui .build/lambda/loan_engine/ui
 	curl -sSf -o .build/lambda/loan_engine/rds-ca.pem https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
 	cd .build/lambda && zip -qr ../lambda.zip . -x '*__pycache__*'
 
