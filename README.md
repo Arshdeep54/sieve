@@ -129,7 +129,8 @@ Requirements:
    aws cognito-idp admin-create-user --user-pool-id <StaffPoolId output> \
      --username person@company.com --user-attributes Name=email,Value=person@company.com Name=email_verified,Value=true
    ```
-6. Open the UI at the `httpApi` URL printed by the deploy. To reach the n8n editor, run `make n8n-tunnel` and open http://localhost:5679. For psql, run `make db-tunnel`, which listens on `localhost:55433`.
+6. Optional custom domain: request an ACM certificate for the name in the same region, validate it through DNS, then set `domain` and `certificateArn` for the stage under `params` in `serverless.yml` and deploy again. The stack adds the domain to API Gateway, the Cognito callback URLs and the S3 CORS origins. Finally, point a CNAME for the name at the `ApiDomainTarget` output.
+7. Open the UI at the `httpApi` URL printed by the deploy. To reach the n8n editor, run `make n8n-tunnel` and open http://localhost:5679. For psql, run `make db-tunnel`, which listens on `localhost:55433`.
 
 Secrets never reach git or the CloudFormation template:
 - RDS reads its password through an `ssm-secure` dynamic reference.

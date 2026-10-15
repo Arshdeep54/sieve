@@ -1,6 +1,14 @@
 service: loan-engine
 frameworkVersion: "4"
 
+params:
+  default:
+    domain: none
+    certificateArn: none
+  prod:
+    domain: sieve.hiesenbug.dev
+    certificateArn: arn:aws:acm:ap-south-1:546702454248:certificate/589b70bb-62ce-4748-9bd2-a5e3e1d6d802
+
 provider:
   name: aws
   runtime: python3.12
@@ -280,7 +288,9 @@ resources:
         CorsConfiguration:
           CorsRules:
             - AllowedMethods: [POST]
-              AllowedOrigins: [!Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"]
+              AllowedOrigins:
+                - !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+                - !If [HasDomain, "https://${param:domain}", !Ref AWS::NoValue]
               AllowedHeaders: ["*"]
               MaxAge: 3600
         LifecycleConfiguration:
@@ -440,8 +450,10 @@ resources:
         SupportedIdentityProviders: [COGNITO]
         CallbackURLs:
           - !Sub https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/
+          - !If [HasDomain, "https://${param:domain}/", !Ref AWS::NoValue]
         LogoutURLs:
           - !Sub https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/
+          - !If [HasDomain, "https://${param:domain}/", !Ref AWS::NoValue]
         PreventUserExistenceErrors: ENABLED
         IdTokenValidity: 60
         AccessTokenValidity: 60
@@ -466,6 +478,28 @@ resources:
         ClientId: !Ref StaffPoolClient
         UseCognitoProvidedValues: true
 
+    ApiDomain:
+      Type: AWS::ApiGatewayV2::DomainName
+      Condition: HasDomain
+      Properties:
+        DomainName: ${param:domain}
+        DomainNameConfigurations:
+          - CertificateArn: ${param:certificateArn}
+            EndpointType: REGIONAL
+            SecurityPolicy: TLS_1_2
+
+    ApiDomainMapping:
+      Type: AWS::ApiGatewayV2::ApiMapping
+      Condition: HasDomain
+      DependsOn: [ApiDomain, HttpApiStage]
+      Properties:
+        DomainName: ${param:domain}
+        ApiId: !Ref HttpApi
+        Stage: $default
+
+  Conditions:
+    HasDomain: !Not [!Equals ["${param:domain}", none]]
+
   Outputs:
     UploadBucketName:
       Value: ${self:custom.bucket}
@@ -477,3 +511,6 @@ resources:
       Value: !Ref SesSender
     StaffPoolId:
       Value: !Ref StaffPool
+    ApiDomainTarget:
+      Condition: HasDomain
+      Value: !GetAtt ApiDomain.RegionalDomainName
