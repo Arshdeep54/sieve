@@ -2,7 +2,7 @@
 
 Upload a CSV of users, match every user to personal loans read live from lender websites, and email each user their best offers.
 
-**Live:** https://d2252yjvg39hbo.cloudfront.net. Sign-in is staff-only, so ask for an account. For a test file, run `python scripts/gen_users.py users.csv 10000`.
+**Live:** https://sieve.hiesenbug.dev. Sign-in is staff-only, so ask for an account. For a test file, run `python scripts/gen_users.py users.csv 10000`.
 
 - **Access**: staff sign in through a Cognito user pool; API Gateway rejects upload and status calls without a valid token.
 - **Ingestion**: the browser uploads straight to S3 with a presigned POST; an S3 event starts a streaming ingest Lambda.
