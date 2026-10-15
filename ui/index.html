@@ -3,24 +3,50 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Loan Match</title>
-    <meta name="description" content="Upload a user file and match every user to live personal loan offers." />
+    <title>Sieve</title>
+    <meta name="description" content="Sieve sifts every uploaded user down to the personal loans they can actually get." />
+    <meta name="theme-color" content="#f4f1ea" />
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cmask id='m'%3E%3Crect width='32' height='32' fill='white'/%3E%3Cg fill='black'%3E%3Ccircle cx='11' cy='8' r='2.1'/%3E%3Ccircle cx='16' cy='8' r='2.1'/%3E%3Ccircle cx='21' cy='8' r='2.1'/%3E%3Ccircle cx='11' cy='13' r='2.1'/%3E%3Ccircle cx='16' cy='13' r='2.1'/%3E%3Ccircle cx='21' cy='13' r='2.1'/%3E%3Ccircle cx='11' cy='18' r='2.1'/%3E%3Ccircle cx='16' cy='18' r='2.1'/%3E%3Ccircle cx='21' cy='18' r='2.1'/%3E%3C/g%3E%3C/mask%3E%3Ccircle cx='16' cy='13' r='12' fill='%2319170f' mask='url(%23m)'/%3E%3Ccircle cx='16' cy='29' r='2.4' fill='%23e04e1b'/%3E%3C/svg%3E"
+    />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=IBM+Plex+Sans:wght@400;500;600&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=IBM+Plex+Mono:wght@500&family=IBM+Plex+Sans:wght@400;500;600&display=swap"
     />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
+    <svg width="0" height="0" class="visually-hidden" aria-hidden="true">
+      <symbol id="sieve-mark" viewBox="0 0 32 32">
+        <mask id="sieve-holes">
+          <rect width="32" height="32" fill="white" />
+          <g fill="black">
+            <circle cx="11" cy="8" r="2.1" />
+            <circle cx="16" cy="8" r="2.1" />
+            <circle cx="21" cy="8" r="2.1" />
+            <circle cx="11" cy="13" r="2.1" />
+            <circle cx="16" cy="13" r="2.1" />
+            <circle cx="21" cy="13" r="2.1" />
+            <circle cx="11" cy="18" r="2.1" />
+            <circle cx="16" cy="18" r="2.1" />
+            <circle cx="21" cy="18" r="2.1" />
+          </g>
+        </mask>
+        <circle cx="16" cy="13" r="12" fill="currentColor" mask="url(#sieve-holes)" />
+        <circle class="mark-grain" cx="16" cy="29" r="2.4" />
+      </symbol>
+    </svg>
+
     <header class="topbar">
       <div class="topbar-inner">
-        <a class="brand" href="./">
-          <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M4 5h16l-6 7v6l-4 2v-8z" />
-          </svg>
-          Loan Match
+        <a class="brand" href="./" aria-label="Sieve home">
+          <svg class="brand-mark" aria-hidden="true"><use href="#sieve-mark" /></svg>
+          <span class="brand-name">sieve</span>
+          <span class="brand-tag">Loan eligibility</span>
         </a>
         <div class="account" id="account" hidden>
           <span class="account-email" id="account-email"></span>
@@ -31,22 +57,26 @@
 
     <main class="page" id="page">
       <section class="intro" aria-labelledby="intro-title">
-        <h1 id="intro-title">Upload users</h1>
+        <p class="eyebrow">New batch</p>
+        <h1 id="intro-title">Sift every user down to the loans they can actually get.</h1>
         <p class="lede">
-          Each row is validated, every user is checked against personal loans read from lender sites, and the
-          best-matched users are emailed their offers.
+          Rows are validated, each user is checked against personal loans read live from lender sites, and the best
+          fits get an email with their offers.
         </p>
       </section>
 
       <section class="upload" aria-label="Upload users">
         <label class="dropzone" id="dropzone" data-state="idle">
           <input id="file-input" type="file" accept=".csv,text/csv" class="visually-hidden" />
-          <svg class="dropzone-icon" viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M12 16V4m0 0-4 4m4-4 4 4M5 14v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4" />
-          </svg>
-          <span class="dropzone-title" id="dropzone-title">Drop a users CSV here, or choose a file</span>
-          <span class="dropzone-hint" id="dropzone-hint">
-            Columns: user_id, email, monthly_income, credit_score, employment_status, age. Up to 200 MB, about two million rows.
+          <span class="dropzone-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M12 16V4m0 0-4 4m4-4 4 4M5 14v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4" /></svg>
+          </span>
+          <span class="dropzone-copy">
+            <span class="dropzone-title" id="dropzone-title">Drop a users CSV here, or choose a file</span>
+            <span class="dropzone-hint" id="dropzone-hint">Up to 200 MB, about two million rows. Needs these columns:</span>
+            <span class="columns" aria-hidden="true">
+              <code>user_id</code><code>email</code><code>monthly_income</code><code>credit_score</code><code>employment_status</code><code>age</code>
+            </span>
           </span>
           <span class="progress" id="upload-progress" hidden>
             <span class="progress-bar" id="upload-progress-bar"></span>
@@ -55,49 +85,64 @@
         <p class="field-error" id="upload-error" role="alert" hidden></p>
       </section>
 
-      <section class="batch" id="batch" aria-live="polite" hidden>
+      <section class="batch reveal" id="batch" aria-live="polite" hidden>
         <div class="batch-head">
-          <h2 id="batch-title">Upload</h2>
+          <div class="batch-title-row">
+            <h2 id="batch-title">Upload</h2>
+            <span class="badge" id="batch-badge"></span>
+          </div>
           <p class="batch-meta" id="batch-meta"></p>
         </div>
 
         <p class="notice" id="batch-notice" hidden></p>
 
-        <ol class="timeline" id="timeline">
-          <li data-step="upload"><span class="step-label">Received</span><span class="step-detail"></span></li>
-          <li data-step="ingest"><span class="step-label">Validated and stored</span><span class="step-detail"></span></li>
-          <li data-step="match"><span class="step-label">Matched to loans</span><span class="step-detail"></span></li>
-          <li data-step="notify"><span class="step-label">Users emailed</span><span class="step-detail"></span></li>
+        <ol class="timeline" id="timeline" style="--progress: 0">
+          <li data-step="upload">
+            <span class="step-node" aria-hidden="true"></span>
+            <span class="step-label">Received</span><span class="step-detail"></span>
+          </li>
+          <li data-step="ingest">
+            <span class="step-node" aria-hidden="true"></span>
+            <span class="step-label">Validated</span><span class="step-detail"></span>
+          </li>
+          <li data-step="match">
+            <span class="step-node" aria-hidden="true"></span>
+            <span class="step-label">Matched</span><span class="step-detail"></span>
+          </li>
+          <li data-step="notify">
+            <span class="step-node" aria-hidden="true"></span>
+            <span class="step-label">Emailed</span><span class="step-detail"></span>
+          </li>
         </ol>
 
-        <div class="figures" id="ingest-figures" hidden>
+        <div class="figures reveal" id="ingest-figures" hidden>
           <div class="figure">
+            <span class="figure-label">Rows read</span>
             <span class="figure-value" id="rows-total">0</span>
-            <span class="figure-label">rows read</span>
           </div>
           <div class="figure">
+            <span class="figure-label">Users stored</span>
             <span class="figure-value" id="rows-valid">0</span>
-            <span class="figure-label">users stored</span>
           </div>
           <div class="figure figure-warn">
+            <span class="figure-label">Rows rejected</span>
             <span class="figure-value" id="rows-rejected">0</span>
-            <span class="figure-label">rows rejected</span>
             <a class="figure-link" id="errors-link" href="#" hidden download>Download rejected rows</a>
           </div>
         </div>
 
-        <section class="funnel-section" id="funnel-section" aria-labelledby="funnel-title" hidden>
+        <section class="funnel-section reveal" id="funnel-section" aria-labelledby="funnel-title" hidden>
           <div class="section-head">
-            <h3 id="funnel-title">How the matches were found</h3>
+            <h3 id="funnel-title">Through the sieve</h3>
             <p class="section-note">
-              Each step only handles what the step before could not settle. Bar length uses a log scale.
+              Each layer only handles what the layer above could not settle. Bar length uses a log scale.
             </p>
           </div>
           <ol class="funnel" id="funnel"></ol>
         </section>
 
         <div class="split">
-          <section class="products-section" id="products-section" aria-labelledby="products-title" hidden>
+          <section class="products-section reveal" id="products-section" aria-labelledby="products-title" hidden>
             <h3 id="products-title">Matches by loan</h3>
             <table class="products">
               <thead>
@@ -111,10 +156,10 @@
             </table>
           </section>
 
-          <section class="emails-section" id="emails-section" aria-labelledby="emails-title" hidden>
+          <section class="emails-section reveal" id="emails-section" aria-labelledby="emails-title" hidden>
             <h3 id="emails-title">Emails</h3>
             <dl class="emails">
-              <div><dt>Sent</dt><dd id="emails-sent">0</dd></div>
+              <div class="emails-sent"><dt>Sent</dt><dd id="emails-sent">0</dd></div>
               <div><dt>Held back by the demo limit</dt><dd id="emails-suppressed">0</dd></div>
               <div><dt>Failed</dt><dd id="emails-failed">0</dd></div>
             </dl>
@@ -127,8 +172,10 @@
         <button class="button" type="button" id="upload-another" hidden>Upload another file</button>
       </section>
 
-      <section class="history" id="history" aria-labelledby="history-title" hidden>
-        <h2 id="history-title">Recent uploads</h2>
+      <section class="history reveal" id="history" aria-labelledby="history-title" hidden>
+        <div class="history-head">
+          <h2 id="history-title">Recent uploads</h2>
+        </div>
         <div class="table-scroll">
           <table class="uploads">
             <thead>

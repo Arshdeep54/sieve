@@ -20,6 +20,7 @@ const byId = (id) => document.getElementById(id);
 const count = new Intl.NumberFormat('en-IN');
 const clock = new Intl.DateTimeFormat('en-IN', { hour: 'numeric', minute: '2-digit' });
 const when = new Intl.DateTimeFormat('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
 
 const view = {
   dropzone: byId('dropzone'),
@@ -31,6 +32,7 @@ const view = {
   batch: byId('batch'),
   batchTitle: byId('batch-title'),
   batchMeta: byId('batch-meta'),
+  batchBadge: byId('batch-badge'),
   notice: byId('batch-notice'),
   timeline: byId('timeline'),
   ingestFigures: byId('ingest-figures'),
@@ -53,6 +55,9 @@ const session = { auth: null, idToken: null };
 let trackedBatch = null;
 let pollTimer = null;
 let funnelSignature = '';
+let lastStatus = null;
+let clockTimer = null;
+const tweens = new WeakMap();
 
 function element(tag, className, text) {
   const node = document.createElement(tag);
@@ -61,8 +66,36 @@ function element(tag, className, text) {
   return node;
 }
 
+function tween(node, value) {
+  const target = value ?? 0;
+  const from = Number(node.dataset.value ?? 0);
+  node.dataset.value = target;
+  cancelAnimationFrame(tweens.get(node));
+  if (from === target || reducedMotion.matches) {
+    node.textContent = count.format(target);
+    return;
+  }
+  const start = performance.now();
+  const frame = (now) => {
+    const progress = Math.min(1, (now - start) / 700);
+    node.textContent = count.format(Math.round(from + (target - from) * (1 - (1 - progress) ** 3)));
+    if (progress < 1) tweens.set(node, requestAnimationFrame(frame));
+  };
+  tweens.set(node, requestAnimationFrame(frame));
+}
+
 function setText(id, value) {
-  byId(id).textContent = count.format(value ?? 0);
+  tween(byId(id), value);
+}
+
+function duration(ms) {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`;
+}
+
+function statusTone(status) {
+  if (status === 'done' || status === 'failed') return status;
+  return status === 'duplicate' ? '' : 'live';
 }
 
 function showUploadError(message) {
@@ -217,10 +250,12 @@ function track(batchId) {
   clearTimeout(pollTimer);
   trackedBatch = batchId;
   funnelSignature = '';
+  lastStatus = null;
+  view.batch.querySelectorAll('[data-value]').forEach((node) => delete node.dataset.value);
   history.replaceState(null, '', `#batch=${batchId}`);
   view.funnel.replaceChildren();
   view.batch.hidden = false;
-  view.batch.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+  view.batch.scrollIntoView({ behavior: reducedMotion.matches ? 'auto' : 'smooth' });
   poll(batchId);
 }
 
@@ -229,8 +264,9 @@ async function poll(batchId) {
     const report = await requestJson('GET', `uploads/${batchId}`);
     if (batchId !== trackedBatch) return;
     render(report);
-    if (FINAL_STATUSES.has(report.batch.status)) loadHistory();
-    else pollTimer = setTimeout(() => poll(batchId), POLL_MS);
+    if (report.batch.status !== lastStatus) loadHistory();
+    lastStatus = report.batch.status;
+    if (!FINAL_STATUSES.has(report.batch.status)) pollTimer = setTimeout(() => poll(batchId), POLL_MS);
   } catch (error) {
     if (batchId !== trackedBatch) return;
     if (error.status === 404) {
@@ -278,6 +314,8 @@ function renderTimeline(report) {
     item.dataset.state = state;
     item.querySelector('.step-detail').textContent = state === 'done' ? details[step] : '';
   });
+  const reached = batch.status === 'duplicate' ? 0 : Math.min(active, STEPS.length - 1);
+  view.timeline.style.setProperty('--progress', reached / (STEPS.length - 1));
 }
 
 function renderIngest(batch, errorsUrl) {
@@ -306,9 +344,9 @@ function funnelRows(funnel, notifications, done) {
       tone: 'quiet',
     },
     { label: 'OpenAI calls', hint: 'Up to 20 profile groups per call', value: funnel.llm_calls, tone: 'quiet' },
-    { label: 'Matches', hint: `Found in ${seconds} s`, value: funnel.total_matches },
+    { label: 'Matches', hint: `Found in ${seconds} s`, value: funnel.total_matches, tone: 'result' },
   ];
-  if (done) rows.push({ label: 'Emails sent', hint: 'Best-matched users only', value: notifications.sent ?? 0 });
+  if (done) rows.push({ label: 'Emails sent', hint: 'Best-matched users only', value: notifications.sent ?? 0, tone: 'result' });
   return rows;
 }
 
@@ -323,6 +361,16 @@ function renderFunnel(report) {
   funnelSignature = signature;
 
   const scale = Math.log10(Math.max(...rows.map((row) => row.value)) + 1);
+  const width = (row) => `${Math.max(0.6, (Math.log10(row.value + 1) / scale) * 70)}%`;
+  if (view.funnel.children.length === rows.length) {
+    rows.forEach((row, index) => {
+      const item = view.funnel.children[index];
+      item.querySelector('.funnel-hint').textContent = row.hint;
+      item.querySelector('.funnel-track').style.setProperty('--width', width(row));
+      tween(item.querySelector('.funnel-value'), row.value);
+    });
+    return;
+  }
   view.funnel.toggleAttribute('data-enter', firstRender);
   view.funnel.replaceChildren(
     ...rows.map((row, index) => {
@@ -331,10 +379,11 @@ function renderFunnel(report) {
       const label = element('span', 'funnel-label', row.label);
       label.append(element('span', 'funnel-hint', row.hint));
       const track = element('span', 'funnel-track');
-      const bar = element('span', 'funnel-bar');
-      bar.style.width = `${Math.max(0.6, (Math.log10(row.value + 1) / scale) * 82)}%`;
-      bar.style.setProperty('--index', index);
-      track.append(bar, element('span', 'funnel-value', count.format(row.value)));
+      track.style.setProperty('--width', width(row));
+      track.style.setProperty('--index', index);
+      const value = element('span', 'funnel-value', count.format(row.value));
+      value.dataset.value = row.value;
+      track.append(element('span', 'funnel-bar'), value);
       item.append(label, track);
       return item;
     }),
@@ -344,29 +393,51 @@ function renderFunnel(report) {
 function renderResults(report) {
   const settled = ['notifying', 'done'].includes(report.batch.status) || report.products.length > 0;
   view.productsSection.hidden = !settled || report.products.length === 0;
-  view.productsBody.replaceChildren(
-    ...report.products.map((product) => {
-      const row = element('tr');
-      const name = element('td', null, product.product_name);
-      name.prepend(element('span', 'product-lender', product.lender));
-      row.append(
-        name,
-        element('td', 'num', count.format(product.matches)),
-        element('td', 'num', `${Math.round(product.avg_score * 100)}%`),
-      );
-      return row;
-    }),
-  );
+  const signature = JSON.stringify(report.products);
+  if (view.productsBody.dataset.signature !== signature) {
+    view.productsBody.dataset.signature = signature;
+    view.productsBody.replaceChildren(
+      ...report.products.map((product, index) => {
+        const row = element('tr');
+        row.style.setProperty('--index', index);
+        const name = element('td', null, product.product_name);
+        name.prepend(element('span', 'product-lender', product.lender));
+        const percent = Math.round(product.avg_score * 100);
+        const meter = element('span', 'fit-meter');
+        const fill = element('span');
+        fill.style.width = `${percent}%`;
+        meter.append(fill);
+        const fit = element('span', 'fit', `${percent}%`);
+        fit.prepend(meter);
+        const fitCell = element('td', 'num');
+        fitCell.append(fit);
+        row.append(name, element('td', 'num', count.format(product.matches)), fitCell);
+        return row;
+      }),
+    );
+  }
   view.emailsSection.hidden = report.batch.status !== 'done';
   setText('emails-sent', report.notifications.sent);
   setText('emails-suppressed', report.notifications.suppressed);
   setText('emails-failed', report.notifications.failed);
 }
 
+function renderMeta(batch) {
+  const started = new Date(batch.created_at);
+  const by = batch.uploaded_by ? ` by ${batch.uploaded_by}` : '';
+  const final = FINAL_STATUSES.has(batch.status);
+  const elapsed = duration((final ? new Date(batch.updated_at) : new Date()) - started);
+  const timing = batch.status === 'duplicate' ? '' : final ? ` · took ${elapsed}` : ` · ${elapsed} so far`;
+  view.batchMeta.textContent = `Started at ${clock.format(started)}${by}${timing}`;
+}
+
 function renderHeader(batch) {
   view.batchTitle.textContent = batch.file_name ?? `Upload ${batch.batch_id.slice(0, 8)}`;
-  const by = batch.uploaded_by ? ` by ${batch.uploaded_by}` : '';
-  view.batchMeta.textContent = `Started at ${clock.format(new Date(batch.created_at))}${by}`;
+  view.batchBadge.textContent = STATUS_LABELS[batch.status] ?? batch.status;
+  view.batchBadge.dataset.tone = statusTone(batch.status);
+  clearInterval(clockTimer);
+  renderMeta(batch);
+  if (!FINAL_STATUSES.has(batch.status)) clockTimer = setInterval(() => renderMeta(batch), 1000);
   view.notice.hidden = true;
   if (batch.status === 'duplicate') {
     showNotice('This exact file was uploaded before, so it was not processed again.', '', {
@@ -398,7 +469,7 @@ function renderHistory(uploads) {
       const file = element('td');
       file.append(link);
       const pill = element('span', 'status-pill', STATUS_LABELS[upload.status] ?? upload.status);
-      if (['done', 'failed'].includes(upload.status)) pill.dataset.tone = upload.status;
+      pill.dataset.tone = statusTone(upload.status);
       const status = element('td');
       status.append(pill);
       row.append(
@@ -451,6 +522,7 @@ view.dropzone.addEventListener('drop', (event) => {
 
 view.uploadAnother.addEventListener('click', () => {
   clearTimeout(pollTimer);
+  clearInterval(clockTimer);
   trackedBatch = null;
   history.replaceState(null, '', location.pathname);
   view.batch.hidden = true;
