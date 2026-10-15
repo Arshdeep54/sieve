@@ -63,30 +63,30 @@
         80
       ],
       "parameters": {
-        "jsCode": "const error = $json;\nconst executionUrl = $('On workflow error').first().json.execution?.url ?? '';\nconst lines = [\n  `Workflow: ${error.workflow}`,\n  `Node: ${error.node ?? 'n/a'}`,\n  `Batch: ${error.batch_id ?? 'n/a'}`,\n  `Error: ${error.message}`,\n  executionUrl ? `Execution: ${executionUrl}` : null,\n].filter(Boolean);\n\nreturn {\n  json: {\n    message: {\n      FromEmailAddress: $env.SES_FROM,\n      Destination: { ToAddresses: [$env.SES_FROM] },\n      Content: {\n        Simple: {\n          Subject: { Data: `[loan-engine] ${error.workflow} failed`, Charset: 'UTF-8' },\n          Body: { Text: { Data: lines.join('\\n'), Charset: 'UTF-8' } },\n        },\n      },\n    },\n  },\n};\n",
+        "jsCode": "const error = $json;\nconst executionUrl = $('On workflow error').first().json.execution?.url ?? '';\nconst lines = [\n  `Workflow: ${error.workflow}`,\n  `Node: ${error.node ?? 'n/a'}`,\n  `Batch: ${error.batch_id ?? 'n/a'}`,\n  `Error: ${error.message}`,\n  executionUrl ? `Execution: ${executionUrl}` : null,\n].filter(Boolean);\n\nreturn {\n  json: {\n    subject: `[loan-engine] ${error.workflow} failed`,\n    body: lines.join('\\n'),\n  },\n};\n",
         "mode": "runOnceForEachItem"
       }
     },
     {
       "id": "5974f589-79c7-59ed-a2e1-59655986a2f5",
       "name": "Email admin",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
+      "type": "n8n-nodes-base.awsSes",
+      "typeVersion": 1,
       "position": [
         520,
         80
       ],
       "parameters": {
-        "method": "POST",
-        "url": "=https://email.{{ $env.AWS_REGION }}.amazonaws.com/v2/email/outbound-emails",
-        "authentication": "predefinedCredentialType",
-        "nodeCredentialType": "aws",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify($json.message) }}",
-        "options": {
-          "timeout": 20000
-        }
+        "resource": "email",
+        "operation": "send",
+        "isBodyHtml": false,
+        "subject": "={{ $json.subject }}",
+        "body": "={{ $json.body }}",
+        "fromEmail": "={{ $env.SES_FROM }}",
+        "toAddresses": [
+          "={{ $env.SES_FROM }}"
+        ],
+        "additionalFields": {}
       },
       "credentials": {
         "aws": {

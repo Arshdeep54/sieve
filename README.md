@@ -37,7 +37,7 @@ flowchart LR
     A -->|extract| OpenAI
     B -->|qualitative checks| OpenAI
     A & B & C & E --> RDS
-    C -->|SES v2 API| SES
+    C -->|n8n AWS SES node| SES
 ```
 
 All Lambdas except `ui` run in private subnets with no NAT. They reach S3 through a gateway endpoint, and n8n through its private IP. The n8n host has no inbound public ports: its webhook accepts traffic from the Lambda security group only, and the editor opens over an SSM port forward.
@@ -135,3 +135,26 @@ Secrets never reach git or the CloudFormation template:
 - RDS reads its password through an `ssm-secure` dynamic reference.
 - The Lambdas receive the database password and webhook secret, resolved from SSM at deploy time.
 - The n8n host builds its `.env` from SSM at start.
+
+## Credentials in n8n
+
+The workflows reference three n8n credentials by fixed ID. They are never stored in git or in the workflow JSON.
+
+| Credential | Type | Used by | Values |
+|---|---|---|---|
+| Loan Engine Postgres (`loanEnginePg001`) | Postgres | A, B, C, E | `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_SSL` |
+| Loan Engine OpenAI (`loanEngineAi001`) | OpenAI | A, B | `OPENAI_API_KEY` |
+| Loan Engine SES (`loanEngineSes01`) | AWS | C and E, through the AWS SES node | `AWS_REGION`, `SES_ACCESS_KEY_ID`, `SES_SECRET_ACCESS_KEY` |
+
+**Automatic.** On every start, `n8n/bootstrap.sh` runs `n8n/credentials.js`, which builds the three credentials from the container environment and imports them with `n8n import:credentials`. It then imports and publishes the workflows. Locally the environment comes from `.env`. On AWS, `infra/n8n-host.sh` writes it from SSM Parameter Store (`/loan-engine/<stage>/*`). n8n encrypts stored credentials with `N8N_ENCRYPTION_KEY`, which also comes from SSM.
+
+**By hand**, for an n8n you run yourself. Open the editor (`make n8n-tunnel` on AWS) and go to Credentials → Add credential:
+1. **Postgres**: host is the RDS endpoint, database and user are `loan_engine`, port is 5432, and SSL is `require`. Name it `Loan Engine Postgres`.
+2. **OpenAI**: paste the API key. Name it `Loan Engine OpenAI`.
+3. **AWS**: set the region to `ap-south-1` and use the access key of the SES sender user. That IAM user may only call `ses:SendEmail` on identities and configuration sets in this account. Name it `Loan Engine SES`.
+
+Then open each workflow and pick the matching credential on every Postgres, OpenAI and AWS SES node. Bootstrapped credentials keep the fixed IDs, so imported workflows need no changes.
+
+Notes:
+- If the SES identity has a default configuration set, the sender policy must allow `configuration-set/*`, or every send fails with `AccessDenied`.
+- The n8n connection to RDS is encrypted, but n8n does not verify the RDS certificate. The Lambdas do verify it, against the bundled RDS CA. The database is reachable only from the Lambda and n8n security groups.
