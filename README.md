@@ -62,6 +62,28 @@ Measured locally with 6 live products:
 
 Ingesting 1M rows (100 MB) takes 54 s locally. The ingest Lambda has 15 minutes.
 
+## Cost
+
+OpenAI token counts come from the `usage` blocks in prod n8n executions, priced at gpt-4.1-mini list rates ($0.40 per 1M input, $1.60 per 1M output). OpenAI now marks gpt-4.1-mini as deprecated; the model is set by `OPENAI_MODEL`.
+
+| Work | LLM calls | Tokens in / out | OpenAI cost |
+|---|---:|---:|---:|
+| Match 10k users, cold cache (prod) | 42 | 38.7k / 21.0k | $0.049 |
+| Match the same users again, warm cache | 0 | 0 | $0 |
+| Match 1M users (estimate: local call count × prod tokens per call) | 189 | ~174k / ~95k | ~$0.22 |
+| Crawl all 5 sources, every page changed (prod) | 5 | 15.7k / 2.6k | $0.011 |
+| Crawl, no page changed | 0 | 0 | $0 |
+
+The fixed AWS cost in ap-south-1 at on-demand prices is about **$32 a month**:
+
+| Resource | Monthly |
+|---|---:|
+| RDS db.t4g.micro, 20 GB gp3 | $17.95 |
+| EC2 t4g.small for n8n, 20 GB gp3 | $10.00 |
+| Public IPv4 for the n8n host | $3.65 |
+
+Lambda, API Gateway, S3, SQS, CloudFront and Cognito stay within the free tier or cost cents at this volume. Ingesting 1M rows uses about 54 GB-seconds of Lambda, roughly $0.001. SES costs $0.10 per 1,000 emails. With no NAT gateway and no interface endpoints there is no idle networking charge beyond the one public IP.
+
 ## Design decisions
 
 - **Presigned POST, not an API upload.** API Gateway caps payloads at 10 MB and requests at 30 s. The browser sends the file to S3, and the policy enforces the size limit (`content-length-range`).
