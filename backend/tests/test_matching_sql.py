@@ -134,3 +134,57 @@ def test_start_matching_refuses_a_batch_that_is_already_running(conn, batch):
     _start(conn, batch)
 
     assert conn.run(_query("Start matching"), p1=batch, p2="exec-2") == []
+
+
+
+def _run_matching(conn, batch_id):
+    started_at = _start(conn, batch_id)
+    funnel = conn.run(_query("SQL hard filter"), p1=batch_id)[0]
+    stats = dict(
+        zip(
+            ["users_in_batch", "products_active", "pairs_total", "pairs_after_sql", "sql_matches", "pairs_deferred"],
+            funnel,
+            strict=True,
+        )
+    )
+    stats |= {"classes_to_judge": 1, "cache_hits": 1, "llm_calls": 0}
+    conn.run(_query("Fan out + record funnel"), p1=batch_id, p2=started_at, p3=json.dumps(stats))
+
+
+@pytest.fixture
+def notified_batch(conn, batch):
+    _product(conn, "Plain", min_income=25000, employment="{salaried}")
+    product = _product(conn, "Needs review", min_income=25000, criteria="2 years of work experience")
+    conn.run(
+        """
+        insert into llm_eval_cache (product_id, product_version, class_key, verdict, reason)
+        values (:id, 1, 'salaried|inc50|cs750|age30', 'eligible', 'Experience is typical.')
+        """,
+        id=product,
+    )
+    _run_matching(conn, batch)
+    conn.run("update matches set notified_at = now()")
+    conn.run("update upload_batches set status = 'done'")
+    return batch
+
+
+def test_rerunning_a_notified_batch_does_not_email_again(conn, notified_batch):
+    _run_matching(conn, notified_batch)
+
+    assert conn.run("select stage, notified_at is not null from matches order by stage") == [
+        ["cache", True],
+        ["sql", True],
+    ]
+
+
+def test_a_new_upload_of_the_same_user_is_notified_again(conn, notified_batch):
+    new_batch = "55555555-5555-4555-8555-555555555555"
+    conn.run(
+        "insert into upload_batches (batch_id, s3_key, status) values (cast(:id as uuid), 'test', 'ingested')",
+        id=new_batch,
+    )
+    conn.run("update users set batch_id = cast(:id as uuid)", id=new_batch)
+
+    _run_matching(conn, new_batch)
+
+    assert conn.run("select count(*) from matches where notified_at is null") == [[2]]
