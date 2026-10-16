@@ -136,7 +136,6 @@ def test_start_matching_refuses_a_batch_that_is_already_running(conn, batch):
     assert conn.run(_query("Start matching"), p1=batch, p2="exec-2") == []
 
 
-
 def _run_matching(conn, batch_id):
     started_at = _start(conn, batch_id)
     funnel = conn.run(_query("SQL hard filter"), p1=batch_id)[0]
