@@ -4,6 +4,8 @@ Upload a CSV of users, match every user to personal loans read live from lender 
 
 **Live:** https://sieve.hiesenbug.dev. Sign-in is staff-only, so ask for an account. For a test file, run `python scripts/gen_users.py users.csv 10000`.
 
+**Demo video:** https://youtu.be/rkIL-dxbKXg
+
 - **Access**: staff sign in through a Cognito user pool; API Gateway rejects upload and status calls without a valid token.
 - **Ingestion**: the browser uploads straight to S3 with a presigned POST; an S3 event starts a streaming ingest Lambda.
 - **Discovery** (n8n workflow A): crawls lender pages daily and extracts structured products with an LLM.
