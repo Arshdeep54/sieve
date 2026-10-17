@@ -31,8 +31,8 @@ flowchart LR
     Status --> RDS
 
     subgraph EC2 [n8n on EC2]
-        A[A: product discovery] --> B[B: matching]
-        B --> C[C: notify]
+        A[A: product discovery]
+        B[B: matching] --> C[C: notify]
         E[E: error handler]
     end
 
@@ -45,6 +45,24 @@ flowchart LR
 
 The page is static files in a private S3 bucket behind CloudFront, so loading it never waits on a Lambda. CloudFront forwards `/uploads*` to API Gateway on the same origin, so there is no CORS between the page and the API. All Lambdas run in private subnets with no NAT. They reach S3 through a gateway endpoint, and n8n through its private IP. The n8n host has no inbound public ports: its webhook accepts traffic from the Lambda security group only, and the editor opens over an SSM port forward.
 
+## Workflows
+
+All four live in `n8n/workflows/`. A, B and C name E as their error workflow.
+
+- **A: product discovery.** Runs every day at 06:00, or by hand. It loads the active rows of `crawl_sources` and fetches each page with a browser user agent (30 s timeout, one retry). A failed fetch is logged and the source keeps its last known products. The page is cleaned and fingerprinted, and an unchanged fingerprint skips the LLM. Changed pages go to OpenAI with a strict JSON schema. The validation step then range-checks every number and applies the rules from [docs/extraction-accuracy.md](docs/extraction-accuracy.md) before the products are saved.
+- **B: matching.** Starts from the ingest Lambda's signed webhook. It rejects a bad signature, then runs the funnel below and records its counts in `match_runs`, then calls C.
+- **C: notify.** Marks every user beyond `DEMO_LIMIT` as `suppressed`. For each remaining user it composes an HTML email with up to 5 offers, sends it with the n8n AWS SES node, records the result in `notifications`, and waits 1 s between sends. It then marks the batch done.
+- **E: errors.** Records the failed workflow, node and message, marks the batch `failed`, and emails the admin through SES.
+
+### Crawling strategy
+
+The 5 sources are the eligibility pages of HDFC, ICICI, Kotak and Bajaj Finserv, plus BankBazaar's rate table. The bank pages state the criteria that the SQL filter needs, and BankBazaar adds rates for 12 more lenders in one page. Sources are rows in `crawl_sources`, so adding a lender is an insert, not a workflow change.
+
+Cleaning keeps the cost per page low and the fingerprint stable:
+- Scripts, styles, navigation, headers and footers are dropped, entities are decoded, and the HTML is split into lines.
+- Only lines that mention eligibility terms (income, age, credit score, employment, rate, tenure, amount, fees) are kept, each with one line of context on either side, up to 16,000 characters.
+- The fingerprint hashes this text, so a rotating banner or tracking script does not trigger a re-extraction.
+
 ## The matching funnel
 
 Checking every user against every product with an LLM does not scale. Each stage passes on only what it cannot settle:
@@ -52,28 +70,26 @@ Checking every user against every product with an LLM does not scale. Each stage
 1. **SQL hard filter.** Income, credit score, age and employment type are checked against each product in a single set-based query. It also computes a fit score and a plain-language reason.
 2. **Profile classes.** The surviving pairs are grouped by employment type plus bands of income (₹25k), credit score (50) and age (5 years). Users in the same class get the same answer on qualitative criteria, so the LLM sees classes, not users.
 3. **Verdict cache.** Verdicts are cached by product version and class, so later batches reuse them. When the crawler sees a product's criteria change, it bumps the version, so stale verdicts are never read.
-4. **LLM judge.** Only uncached classes reach the model: 20 classes per call, a strict JSON schema, temperature 0. Failed calls are retried individually, up to 4 rounds.
+4. **LLM judge.** Only uncached classes reach the model: 20 classes per call, a strict JSON schema, temperature 0. Calls that come back empty or with an error are sent again, up to 4 attempts in total; after that the run fails and workflow E takes over. A verdict that is missing or invalid is stored as `likely`, since the pair already passed every numeric rule.
 
-Measured locally with 6 live products:
+Measured on prod with 6 live products, from the `match_runs` table:
 
 | Batch | Pairs | After SQL | Classes | Cache hits | LLM calls | Matches | Matching time |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| 10k users, cold cache | 60,000 | 15,606 | 787 | 0 | 42 | 15,606 | 77 s |
-| Same 10k, warm cache | 60,000 | 15,606 | 787 | 787 | 0 | 15,606 | 0.9 s |
-| 1M users | 6,000,000 | 1,844,818 | 4,515 | 787 | 189 | 1,838,607 | 240 s |
+| 10k users, cold cache | 60,000 | 19,457 | 968 | 0 | 51 | 19,432 | 10.7 s |
+| 10k different users, warm cache | 60,000 | 19,457 | 968 | 905 | 8 | 19,457 | 7.1 s |
 
 Ingesting 1M rows (100 MB) takes 54 s locally. The ingest Lambda has 15 minutes.
 
 ## Cost
 
-OpenAI token counts come from the `usage` blocks in prod n8n executions, priced at gpt-4.1-mini list rates ($0.40 per 1M input, $1.60 per 1M output). OpenAI now marks gpt-4.1-mini as deprecated; the model is set by `OPENAI_MODEL`.
+OpenAI token counts come from the `usage` blocks in prod n8n executions, priced at gpt-4.1-mini list rates ($0.40 per 1M input, $1.60 per 1M output). OpenAI now marks gpt-4.1-mini as deprecated; the model is set by `OPENAI_MODEL` in `.env` locally and in `infra/n8n-host.sh` on AWS.
 
 | Work | LLM calls | Tokens in / out | OpenAI cost |
 |---|---:|---:|---:|
-| Match 10k users, cold cache (prod) | 42 | 38.7k / 21.0k | $0.049 |
+| Match 10k users, cold cache (estimate: 51 calls × prod tokens per call) | 51 | ~47k / ~25.5k | ~$0.06 |
 | Match the same users again, warm cache | 0 | 0 | $0 |
-| Match 1M users (estimate: local call count × prod tokens per call) | 189 | ~174k / ~95k | ~$0.22 |
-| Crawl all 5 sources, every page changed (prod) | 5 | 15.7k / 2.6k | $0.011 |
+| Crawl all 5 sources, every page changed (prod) | 5 | 15.7k / 2.6k | $0.010 |
 | Crawl, no page changed | 0 | 0 | $0 |
 
 The fixed AWS cost in ap-south-1 at on-demand prices is about **$32 a month**:
@@ -89,12 +105,12 @@ Lambda, API Gateway, S3, SQS, CloudFront and Cognito stay within the free tier o
 ## Design decisions
 
 - **Presigned POST, not an API upload.** API Gateway caps payloads at 10 MB and requests at 30 s. The browser sends the file to S3, and the policy enforces the size limit (`content-length-range`).
-- **Streaming ingest.** The Lambda reads the S3 body line by line and loads valid rows with `COPY`, so memory stays flat at any file size. Bad rows go to `errors/<batch>.csv`, which the UI offers as a download.
+- **Streaming ingest.** The Lambda reads the S3 body line by line and loads valid rows with `COPY`, so valid rows never pile up in memory. Bad rows are spooled to a temp file and uploaded as `errors/<batch>.csv`, which the UI offers as a download.
 - **Idempotent ingest.** S3 can deliver an event twice. A batch that is already ingested only re-triggers matching. Re-uploading a byte-identical file (same ETag) marks the new batch `duplicate` and points to the original.
 - **Signed webhooks.** The ingest Lambda signs the payload with HMAC-SHA256. Workflow B verifies the raw body before doing any work.
 - **Crawler change detection.** Pages are cleaned and fingerprinted. An unchanged page skips the LLM, and a failed source keeps its last known products.
-- **Extraction is audited, and its rules are enforced in code.** Every extracted field was checked by hand against the lender pages. Three errors were found, which wrongly excluded 5,477 user–lender pairs. Rewording the prompt did not fix them reliably, so the validation step enforces the rules. See [docs/extraction-accuracy.md](docs/extraction-accuracy.md).
-- **Demo email limit.** Only the `DEMO_LIMIT` best-matched users are emailed; the rest are recorded as `suppressed`. Every address is rewritten to `GMAIL_BASE+<name>@gmail.com`, so no real user is emailed.
+- **Extraction is audited, and its rules are enforced in code.** Every eligibility field was checked by hand against the lender pages (the aggregator's rate-only rows were not). Three errors were found: two wrongly excluded 5,477 user–lender pairs, and one wrongly included 106. Rewording the prompt did not fix them reliably, so the validation step enforces the rules. See [docs/extraction-accuracy.md](docs/extraction-accuracy.md).
+- **Demo email limit.** Only the `DEMO_LIMIT` best-matched users are emailed (5 on AWS, set in `infra/n8n-host.sh`); the rest are recorded as `suppressed`. Every address is rewritten to `GMAIL_BASE+<firstname>-<id>@gmail.com`, where `<id>` is the first 4 characters of the user ID, so no real user is emailed.
 - **Staff-only access.** Uploads spend OpenAI credits and send email, so every `/uploads` route has a Cognito JWT authorizer on API Gateway. Requests without a valid token never reach a Lambda. Accounts are created by an admin (self sign-up is off), and each batch records who uploaded it. The page uses the authorization code flow with PKCE, so no client secret ships to the browser. Running locally there is no sign-in: the local API binds to 127.0.0.1 only.
 - **No NAT gateway.** n8n is the only component that needs the internet, so it runs in the public subnet. Everything else stays private.
 
@@ -102,7 +118,7 @@ Lambda, API Gateway, S3, SQS, CloudFront and Cognito stay within the free tier o
 
 ```
 backend/src/loan_engine/   Lambda code: ingest, batches, reports, handlers/
-backend/tests/             unit tests, including golden tests for workflow B's SQL
+backend/tests/             unit tests; workflow B's SQL runs as shipped against Postgres
 db/migrations/             schema and crawl sources, applied in order
 n8n/workflows/             workflows A, B, C and E, imported on n8n start
 n8n/bootstrap.sh           imports credentials from env, imports and publishes workflows
@@ -125,9 +141,9 @@ make api                          # UI and API on http://localhost:8040
 Open http://localhost:8040 and drop a CSV. Other entry points:
 
 ```sh
-make ingest FILE=data/users.csv                       # ingest without the UI
-python scripts/gen_users.py data/users-1m.csv 1000000  # load test file
-make test lint
+python scripts/gen_users.py data/users.csv 10000   # test file
+make ingest FILE=data/users.csv                    # ingest without the UI
+make test lint                                     # tests need Postgres from make up
 ```
 
 The local API stands in for API Gateway, S3 and the Lambdas, and runs the same ingest code. Without SES keys, sends are recorded as `failed` and the rest of the pipeline still completes.
@@ -136,11 +152,12 @@ The local API stands in for API Gateway, S3 and the Lambdas, and runs the same i
 
 Requirements:
 - AWS credentials allowed to create the resources in `serverless.yml`.
+- Node.js (for `npx serverless`), uv, curl and zip.
 - The Session Manager plugin for the AWS CLI.
 - A Serverless account (`npx serverless@4 login`).
 
 1. Verify the sender address and the recipient inbox in SES (ap-south-1). While SES is in the sandbox, every recipient must be verified: verify `GMAIL_BASE@gmail.com`, since `+` aliases deliver to it.
-2. Put the production secrets in `.env.aws` (same keys as `.env.example`), then store them in SSM:
+2. Put the production secrets in `.env.aws` (same keys as `.env.example`; `OPENAI_MODEL` and `DEMO_LIMIT` are fixed in `infra/n8n-host.sh` instead), then store them in SSM:
    ```sh
    make params STAGE=dev
    ```
@@ -158,9 +175,9 @@ Requirements:
 6. Optional custom domain: request an ACM certificate for the name in `us-east-1` (CloudFront only reads certificates from there), validate it through DNS, then set `domain` and `certificateArn` for the stage under `params` in `serverless.yml` and deploy again. The stack adds the domain to CloudFront, the Cognito callback URLs and the S3 CORS origins. Finally, point a CNAME for the name at the `SiteDomainName` output.
 7. Open the UI at the CloudFront URL printed by the deploy. To reach the n8n editor, run `make n8n-tunnel` and open http://localhost:5679. For psql, run `make db-tunnel`, which listens on `localhost:55433`.
 
-Secrets never reach git or the CloudFormation template:
-- RDS reads its password through an `ssm-secure` dynamic reference.
-- The Lambdas receive the database password and webhook secret, resolved from SSM at deploy time.
+Secrets never reach git:
+- RDS reads its password through an `ssm-secure` dynamic reference, so it stays out of the CloudFormation template.
+- The Lambdas receive the database password and webhook secret as environment variables. Serverless resolves them from SSM at deploy time, so they do appear in the deployed template and Lambda configuration.
 - The n8n host builds its `.env` from SSM at start.
 
 ## Credentials in n8n

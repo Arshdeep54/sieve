@@ -1,11 +1,11 @@
 # Extraction accuracy
 
-Workflow A reads lender pages with an LLM. The SQL filter in workflow B trusts those numbers, so one bad field silently includes or excludes thousands of users. I checked every extracted field by hand against the live lender pages, then measured how each error changed matches for the 10k users in `data/users.csv`.
+Workflow A reads lender pages with an LLM. The SQL filter in workflow B trusts those numbers, so one bad field silently includes or excludes thousands of users. I checked every eligibility field by hand against the live lender pages, then measured how each error changed matches for the 10k users in `data/users.csv`.
 
 ## Method
 
 - **Ground truth:** each lender's eligibility page, read by hand on 2026-10-15.
-- **Scope:** the six products that carry eligibility criteria. Each one has seven fields: min/max age, min income, min credit score, employment types, max amount and rate.
+- **Scope:** the six products that carry eligibility criteria. Each one has seven fields: min/max age, min income, min credit score, employment types, max amount and rate. The table below gives the criteria per product family and leaves out rates.
 - **Impact:** the SQL hard filter run twice over the same users, once with the extracted values and once with the corrected values.
 - **Not checked:** the twelve BankBazaar rows. They should only list rates, which feed the emails; see below for when they did not.
 
@@ -47,7 +47,7 @@ On the next crawl the model fixed ICICI, but it split Kotak into three products 
 | If no product on a page separates `self_employed` from `business`, a self-employed product gets both | Lenders that do split them (separate professional and business products) keep the split |
 | A page that lists several lenders supplies rates, amounts and fees only; eligibility fields are cleared | An aggregator's eligibility text is generic, and each lender's own page is the source of truth |
 
-The prompt and the validation code are both part of each page's fingerprint, so changing either re-extracts every page once instead of keeping stale products. Products that drop out of a successful crawl are retired. `backend/tests/test_crawler_validation.py` runs the shipped validation code on the exact outputs that failed.
+A version tag for the prompt and the validation code is part of each page's fingerprint. Changing either and bumping the tag re-extracts every page once instead of keeping stale products. Products that drop out of a successful crawl are retired. `backend/tests/test_crawler_validation.py` runs the shipped validation code on the exact outputs that failed.
 
 ## After the fix
 
